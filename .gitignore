@@ -1,0 +1,14 @@
+.env
+.env.local
+.pytest_cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+data/
+logs/
+reports/
+
+.DS_Store
+Thumbs.db

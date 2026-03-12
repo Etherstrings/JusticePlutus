@@ -1,0 +1,1342 @@
+# -*- coding: utf-8 -*-
+"""
+===================================
+A股自选股智能分析系统 - 配置管理模块
+===================================
+
+职责：
+1. 使用单例模式管理全局配置
+2. 从 .env 文件加载敏感配置
+3. 提供类型安全的配置访问接口
+"""
+
+import json
+import os
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Tuple
+from urllib.parse import urlparse
+from dotenv import load_dotenv, dotenv_values
+from dataclasses import dataclass, field
+
+
+@dataclass
+class ConfigIssue:
+    """Structured configuration validation issue with a severity level.
+
+    Attributes:
+        severity: One of "error", "warning", or "info".
+        message:  Human-readable description of the issue.
+        field:    The environment variable / config field name most relevant to
+                  this issue (empty string when not applicable).
+    """
+
+    severity: Literal["error", "warning", "info"]
+    message: str
+    field: str = ""
+
+    def __str__(self) -> str:  # noqa: D105
+        return self.message
+
+
+_MANAGED_LITELLM_KEY_PROVIDERS = {"gemini", "vertex_ai", "anthropic", "openai", "deepseek"}
+
+
+def _get_litellm_provider(model: str) -> str:
+    """Extract the LiteLLM provider prefix from a model string."""
+    if not model:
+        return ""
+    if "/" in model:
+        return model.split("/", 1)[0]
+    return "openai"
+
+
+def _uses_direct_env_provider(model: str) -> bool:
+    """Whether runtime handles the model via direct litellm env/provider resolution."""
+    provider = _get_litellm_provider(model)
+    return bool(provider) and provider not in _MANAGED_LITELLM_KEY_PROVIDERS
+
+
+def setup_env(override: bool = False):
+    """
+    Initialize environment variables from .env file.
+
+    Args:
+        override: If True, overwrite existing environment variables with values
+                  from .env file. Set to True when reloading config after updates.
+                  Default is False to preserve behavior on initial load where
+                  system environment variables take precedence.
+    """
+    # src/config.py -> src/ -> root
+    env_file = os.getenv("ENV_FILE")
+    if env_file:
+        env_path = Path(env_file)
+    else:
+        env_path = Path(__file__).parent.parent / '.env'
+    load_dotenv(dotenv_path=env_path, override=override)
+
+
+@dataclass
+class Config:
+    """
+    系统配置类 - 单例模式
+    
+    设计说明：
+    - 使用 dataclass 简化配置属性定义
+    - 所有配置项从环境变量读取，支持默认值
+    - 类方法 get_instance() 实现单例访问
+    """
+    
+    # === 自选股配置 ===
+    stock_list: List[str] = field(default_factory=list)
+
+    # === 飞书云文档配置 ===
+    feishu_app_id: Optional[str] = None
+    feishu_app_secret: Optional[str] = None
+    feishu_folder_token: Optional[str] = None  # 目标文件夹 Token
+
+    # === 数据源 API Token ===
+    tushare_token: Optional[str] = None
+    
+    # === AI 分析配置 ===
+    # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-2.5-flash)
+    litellm_model: str = ""  # Primary model; must include provider prefix when set explicitly
+    litellm_fallback_models: List[str] = field(default_factory=list)  # Cross-model fallback list
+
+    # --- Multi-channel LLM config (new) ---
+    # LITELLM_CONFIG: path to a standard litellm_config.yaml file (most powerful)
+    litellm_config_path: Optional[str] = None
+    # Internal metadata: which config layer actually produced llm_model_list
+    llm_models_source: str = "legacy_env"
+    # LLM_CHANNELS: list of channel dicts, each with name/base_url/api_keys/models
+    llm_channels: List[Dict[str, Any]] = field(default_factory=list)
+    # Pre-built LiteLLM Router model_list (populated from channels, YAML, or legacy keys)
+    llm_model_list: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Multi-key support: each list is parsed from *_API_KEYS (comma-separated) with single-key fallback
+    gemini_api_keys: List[str] = field(default_factory=list)
+    anthropic_api_keys: List[str] = field(default_factory=list)
+    openai_api_keys: List[str] = field(default_factory=list)
+    deepseek_api_keys: List[str] = field(default_factory=list)
+
+    # Legacy single-key fields (kept for backward compatibility; gemini_api_keys[0] when set)
+    gemini_api_key: Optional[str] = None
+    gemini_model: str = "gemini-3-flash-preview"  # 主模型
+    gemini_model_fallback: str = "gemini-2.5-flash"  # 备选模型
+    gemini_temperature: float = 0.7  # 温度参数（0.0-2.0，控制输出随机性，默认0.7）
+
+    # Gemini API 请求配置（防止 429 限流）
+    gemini_request_delay: float = 2.0  # 请求间隔（秒）
+    gemini_max_retries: int = 5  # 最大重试次数
+    gemini_retry_delay: float = 5.0  # 重试基础延时（秒）
+
+    # Anthropic Claude API（备选，当 Gemini 不可用时使用）
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: str = "claude-3-5-sonnet-20241022"  # Claude model name
+    anthropic_temperature: float = 0.7  # Anthropic temperature (0.0-1.0, default 0.7)
+    anthropic_max_tokens: int = 8192  # Max tokens for Anthropic responses
+
+    # OpenAI 兼容 API（备选，当 Gemini/Anthropic 不可用时使用）
+    openai_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None  # 如: https://api.openai.com/v1
+    openai_model: str = "gpt-4o-mini"  # OpenAI 兼容模型名称
+    openai_vision_model: Optional[str] = None  # Deprecated: use VISION_MODEL instead
+    openai_temperature: float = 0.7  # OpenAI 温度参数（0.0-2.0，默认0.7）
+
+    # === Vision 配置 ===
+    # VISION_MODEL: litellm model string used for image understanding calls.
+    # Fallback chain: VISION_MODEL → OPENAI_VISION_MODEL → gemini/gemini-2.0-flash
+    vision_model: str = ""
+    # VISION_PROVIDER_PRIORITY: comma-separated provider order for Vision fallback.
+    vision_provider_priority: str = "gemini,anthropic,openai"
+
+    # === 搜索引擎配置（支持多 Key 负载均衡）===
+    bocha_api_keys: List[str] = field(default_factory=list)  # Bocha API Keys
+    minimax_api_keys: List[str] = field(default_factory=list)  # MiniMax API Keys
+    tavily_api_keys: List[str] = field(default_factory=list)  # Tavily API Keys
+    brave_api_keys: List[str] = field(default_factory=list)  # Brave Search API Keys
+    serpapi_keys: List[str] = field(default_factory=list)  # SerpAPI Keys
+    searxng_base_urls: List[str] = field(default_factory=list)  # SearXNG instance URLs (self-hosted, no quota)
+
+    # === 新闻与分析筛选配置 ===
+    news_max_age_days: int = 3   # 新闻最大时效（天）
+    bias_threshold: float = 5.0  # 乖离率阈值（%），超过此值提示不追高
+
+    # === Agent 模式配置 ===
+    agent_mode: bool = False
+    agent_max_steps: int = 10
+    agent_skills: List[str] = field(default_factory=list)
+    agent_strategy_dir: Optional[str] = None
+
+    # === 通知配置（可同时配置多个，全部推送）===
+    
+    # 企业微信 Webhook
+    wechat_webhook_url: Optional[str] = None
+    
+    # 飞书 Webhook
+    feishu_webhook_url: Optional[str] = None
+    
+    # Telegram 配置（需要同时配置 Bot Token 和 Chat ID）
+    telegram_bot_token: Optional[str] = None  # Bot Token（@BotFather 获取）
+    telegram_chat_id: Optional[str] = None  # Chat ID
+    telegram_message_thread_id: Optional[str] = None  # Topic ID (Message Thread ID) for groups
+    
+    # 邮件配置（只需邮箱和授权码，SMTP 自动识别）
+    email_sender: Optional[str] = None  # 发件人邮箱
+    email_sender_name: str = "daily_stock_analysis股票分析助手"  # 发件人显示名称
+    email_password: Optional[str] = None  # 邮箱密码/授权码
+    email_receivers: List[str] = field(default_factory=list)  # 收件人列表（留空则发给自己）
+
+    # Stock-to-email group routing (Issue #268): STOCK_GROUP_N + EMAIL_GROUP_N
+    # When configured, each group's report is sent to that group's emails only.
+    stock_email_groups: List[Tuple[List[str], List[str]]] = field(default_factory=list)
+
+    # Pushover 配置（手机/桌面推送通知）
+    pushover_user_key: Optional[str] = None  # 用户 Key（https://pushover.net 获取）
+    pushover_api_token: Optional[str] = None  # 应用 API Token
+    
+    # 自定义 Webhook（支持多个，逗号分隔）
+    # 适用于：钉钉、Discord、Slack、自建服务等任意支持 POST JSON 的 Webhook
+    custom_webhook_urls: List[str] = field(default_factory=list)
+    custom_webhook_bearer_token: Optional[str] = None  # Bearer Token（用于需要认证的 Webhook）
+    webhook_verify_ssl: bool = True  # Webhook HTTPS 证书校验，false 可支持自签名（有 MITM 风险）
+
+    # Discord 通知配置
+    discord_bot_token: Optional[str] = None  # Discord Bot Token
+    discord_main_channel_id: Optional[str] = None  # Discord 主频道 ID
+    discord_webhook_url: Optional[str] = None  # Discord Webhook URL
+
+    # AstrBot 通知配置
+    astrbot_token: Optional[str] = None
+    astrbot_url: Optional[str] = None
+
+    # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
+    single_stock_notify: bool = False
+
+    # 报告类型：simple(精简) 或 full(完整)
+    report_type: str = "simple"
+
+    # 仅分析结果摘要：true 时只推送汇总，不含个股详情（Issue #262）
+    report_summary_only: bool = False
+
+    # Report Engine P0: Jinja2 renderer and integrity checks
+    report_templates_dir: str = "templates"  # Template directory (relative to project root)
+    report_renderer_enabled: bool = False  # Enable Jinja2 rendering (default off for zero regression)
+    report_integrity_enabled: bool = True  # Content integrity validation after LLM output
+    report_integrity_retry: int = 1  # Retry count when mandatory fields missing (0 = placeholder only)
+    report_history_compare_n: int = 0  # History comparison count (0 = disabled)
+
+    # PushPlus 推送配置
+    pushplus_token: Optional[str] = None  # PushPlus Token
+    pushplus_topic: Optional[str] = None  # PushPlus 群组编码（一对多推送）
+
+    # Server酱3 推送配置
+    serverchan3_sendkey: Optional[str] = None  # Server酱3 SendKey
+
+    # 分析间隔时间（秒）- 用于避免API限流
+    analysis_delay: float = 0.0  # 个股分析与大盘分析之间的延迟
+
+    # Merge stock + market report into one notification (Issue #190)
+    merge_email_notification: bool = False
+
+    # 消息长度限制（字节）- 超长自动分批发送
+    feishu_max_bytes: int = 20000  # 飞书限制约 20KB，默认 20000 字节
+    wechat_max_bytes: int = 4000   # 企业微信限制 4096 字节，默认 4000 字节
+    discord_max_words: int = 2000  # Discord 限制 2000 字，默认 2000 字
+    wechat_msg_type: str = "markdown"  # 企业微信消息类型，默认 markdown 类型
+
+    # Markdown 转图片（Issue #289）：对不支持 Markdown 的渠道以图片发送
+    markdown_to_image_channels: List[str] = field(default_factory=list)  # 逗号分隔：telegram,wechat,custom,email
+    markdown_to_image_max_chars: int = 15000  # 超过此长度不转换，避免超大图片
+    md2img_engine: str = "wkhtmltoimage"  # wkhtmltoimage | markdown-to-file (Issue #455, better emoji support)
+
+    # 实时行情预取（Issue #455）：设为 false 可禁用，避免 efinance/akshare_em 全市场拉取
+    prefetch_realtime_quotes: bool = True
+
+    # === 数据库配置 ===
+    database_path: str = "./data/stock_analysis.db"
+
+    # 是否保存分析上下文快照（用于历史回溯）
+    save_context_snapshot: bool = True
+
+    # === 回测配置 ===
+    backtest_enabled: bool = True
+    backtest_eval_window_days: int = 10
+    backtest_min_age_days: int = 14
+    backtest_engine_version: str = "v1"
+    backtest_neutral_band_pct: float = 2.0
+    
+    # === 日志配置 ===
+    log_dir: str = "./logs"  # 日志文件目录
+    log_level: str = "INFO"  # 日志级别
+    
+    # === 系统配置 ===
+    max_workers: int = 3  # 低并发防封禁
+    debug: bool = False
+    http_proxy: Optional[str] = None  # HTTP 代理 (例如: http://127.0.0.1:10809)
+    https_proxy: Optional[str] = None # HTTPS 代理
+    
+    # === 定时任务配置 ===
+    schedule_enabled: bool = False            # 是否启用定时任务
+    schedule_time: str = "18:00"              # 每日推送时间（HH:MM 格式）
+    schedule_run_immediately: bool = True     # 启动时是否立即执行一次
+    run_immediately: bool = True              # 启动时是否立即执行一次（非定时模式）
+    market_review_enabled: bool = True        # 是否启用大盘复盘
+    # 大盘复盘市场区域：cn(A股)、us(美股)、both(两者)，us 适合仅关注美股的用户
+    market_review_region: str = "cn"
+    # 交易日检查：默认启用，非交易日跳过执行；设为 false 或 --force-run 可强制执行（Issue #373）
+    trading_day_check_enabled: bool = True
+
+    # === 实时行情增强数据配置 ===
+    # 实时行情开关（关闭后使用历史收盘价进行分析）
+    enable_realtime_quote: bool = True
+    # 盘中实时技术面：启用时用实时价计算 MA/多头排列（Issue #234）；关闭则用昨日收盘
+    enable_realtime_technical_indicators: bool = True
+    # 筹码分布开关（该接口不稳定，云端部署建议关闭）
+    enable_chip_distribution: bool = True
+    # 东财接口补丁开关
+    enable_eastmoney_patch: bool = False
+    # 实时行情数据源优先级（逗号分隔）
+    # 推荐顺序：tencent > akshare_sina > efinance > akshare_em > tushare
+    # - tencent: 腾讯财经，有量比/换手率/市盈率等，单股查询稳定（推荐）
+    # - akshare_sina: 新浪财经，基本行情稳定，但无量比
+    # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
+    # - tushare: Tushare Pro，需要2000积分，数据全面（付费用户可优先使用）
+    realtime_source_priority: str = "tencent,akshare_sina,efinance,akshare_em"
+    # 实时行情缓存时间（秒）
+    realtime_cache_ttl: int = 600
+    # 熔断器冷却时间（秒）
+    circuit_breaker_cooldown: int = 300
+
+    # Discord 机器人状态
+    discord_bot_status: str = "A股智能分析 | /help"
+
+    # === 流控配置（防封禁关键参数）===
+    # Akshare 请求间隔范围（秒）
+    akshare_sleep_min: float = 2.0
+    akshare_sleep_max: float = 5.0
+    
+    # Tushare 每分钟最大请求数（免费配额）
+    tushare_rate_limit_per_minute: int = 80
+    
+    # 重试配置
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
+    retry_max_delay: float = 30.0
+    
+    # === WebUI 配置 ===
+    webui_enabled: bool = False
+    webui_host: str = "127.0.0.1"
+    webui_port: int = 8000
+    
+    # === 机器人配置 ===
+    bot_enabled: bool = True              # 是否启用机器人功能
+    bot_command_prefix: str = "/"         # 命令前缀
+    bot_rate_limit_requests: int = 10     # 频率限制：窗口内最大请求数
+    bot_rate_limit_window: int = 60       # 频率限制：窗口时间（秒）
+    bot_admin_users: List[str] = field(default_factory=list)  # 管理员用户 ID 列表
+    
+    # 飞书机器人（事件订阅）- 已有 feishu_app_id, feishu_app_secret
+    feishu_verification_token: Optional[str] = None  # 事件订阅验证 Token
+    feishu_encrypt_key: Optional[str] = None         # 消息加密密钥（可选）
+    feishu_stream_enabled: bool = False              # 是否启用 Stream 长连接模式（无需公网IP）
+    
+    # 钉钉机器人
+    dingtalk_app_key: Optional[str] = None      # 应用 AppKey
+    dingtalk_app_secret: Optional[str] = None   # 应用 AppSecret
+    dingtalk_stream_enabled: bool = False       # 是否启用 Stream 模式（无需公网IP）
+    
+    # 企业微信机器人（回调模式）
+    wecom_corpid: Optional[str] = None              # 企业 ID
+    wecom_token: Optional[str] = None               # 回调 Token
+    wecom_encoding_aes_key: Optional[str] = None    # 消息加解密密钥
+    wecom_agent_id: Optional[str] = None            # 应用 AgentId
+    
+    # Telegram 机器人 - 已有 telegram_bot_token, telegram_chat_id
+    telegram_webhook_secret: Optional[str] = None   # Webhook 密钥
+
+    # === 配置校验模式 ===
+    # CONFIG_VALIDATE_MODE=warn (default): log all issues but always continue startup
+    # CONFIG_VALIDATE_MODE=strict: exit(1) when any "error" severity issue is found
+    config_validate_mode: str = "warn"
+
+    # 单例实例存储
+    _instance: Optional['Config'] = None
+    
+    @classmethod
+    def get_instance(cls) -> 'Config':
+        """
+        获取配置单例实例
+        
+        单例模式确保：
+        1. 全局只有一个配置实例
+        2. 配置只从环境变量加载一次
+        3. 所有模块共享相同配置
+        """
+        if cls._instance is None:
+            cls._instance = cls._load_from_env()
+        return cls._instance
+    
+    @classmethod
+    def _load_from_env(cls) -> 'Config':
+        """
+        从 .env 文件加载配置
+        
+        加载优先级：
+        1. 系统环境变量
+        2. .env 文件
+        3. 代码中的默认值
+        """
+        # 确保环境变量已加载
+        setup_env()
+
+        # === 智能代理配置 (关键修复) ===
+        # 如果配置了代理，自动设置 NO_PROXY 以排除国内数据源，避免行情获取失败
+        http_proxy = os.getenv('HTTP_PROXY') or os.getenv('http_proxy')
+        if http_proxy:
+            # 国内金融数据源域名列表
+            domestic_domains = [
+                'eastmoney.com',   # 东方财富 (Efinance/Akshare)
+                'sina.com.cn',     # 新浪财经 (Akshare)
+                '163.com',         # 网易财经 (Akshare)
+                'tushare.pro',     # Tushare
+                'baostock.com',    # Baostock
+                'sse.com.cn',      # 上交所
+                'szse.cn',         # 深交所
+                'csindex.com.cn',  # 中证指数
+                'cninfo.com.cn',   # 巨潮资讯
+                'localhost',
+                '127.0.0.1'
+            ]
+
+            # 获取现有的 no_proxy
+            current_no_proxy = os.getenv('NO_PROXY') or os.getenv('no_proxy') or ''
+            existing_domains = current_no_proxy.split(',') if current_no_proxy else []
+
+            # 合并去重
+            final_domains = list(set(existing_domains + domestic_domains))
+            final_no_proxy = ','.join(filter(None, final_domains))
+
+            # 设置环境变量 (requests/urllib3/aiohttp 都会遵守此设置)
+            os.environ['NO_PROXY'] = final_no_proxy
+            os.environ['no_proxy'] = final_no_proxy
+
+            # 确保 HTTP_PROXY 也被正确设置（以防仅在 .env 中定义但未导出）
+            os.environ['HTTP_PROXY'] = http_proxy
+            os.environ['http_proxy'] = http_proxy
+
+            # HTTPS_PROXY 同理
+            https_proxy = os.getenv('HTTPS_PROXY') or os.getenv('https_proxy')
+            if https_proxy:
+                os.environ['HTTPS_PROXY'] = https_proxy
+                os.environ['https_proxy'] = https_proxy
+
+        
+        # 解析自选股列表（逗号分隔，统一为大写 Issue #355）
+        stock_list_str = os.getenv('STOCK_LIST', '')
+        stock_list = [
+            (c or "").strip().upper()
+            for c in stock_list_str.split(',')
+            if (c or "").strip()
+        ]
+        
+        # 如果没有配置，使用默认的示例股票
+        if not stock_list:
+            stock_list = ['600519', '000001', '300750']
+        
+        # === LiteLLM multi-key parsing ===
+        # GEMINI_API_KEYS (comma-separated) > GEMINI_API_KEY (single)
+        _gemini_keys_raw = os.getenv('GEMINI_API_KEYS', '')
+        gemini_api_keys = [k.strip() for k in _gemini_keys_raw.split(',') if k.strip()]
+        _single_gemini = os.getenv('GEMINI_API_KEY', '').strip()
+        if not gemini_api_keys and _single_gemini:
+            gemini_api_keys = [_single_gemini]
+
+        # ANTHROPIC_API_KEYS > ANTHROPIC_API_KEY
+        _anthropic_keys_raw = os.getenv('ANTHROPIC_API_KEYS', '')
+        anthropic_api_keys = [k.strip() for k in _anthropic_keys_raw.split(',') if k.strip()]
+        _single_anthropic = os.getenv('ANTHROPIC_API_KEY', '').strip()
+        if not anthropic_api_keys and _single_anthropic:
+            anthropic_api_keys = [_single_anthropic]
+
+        # OPENAI_API_KEYS > AIHUBMIX_KEY > OPENAI_API_KEY
+        _openai_keys_raw = os.getenv('OPENAI_API_KEYS', '')
+        openai_api_keys = [k.strip() for k in _openai_keys_raw.split(',') if k.strip()]
+        if not openai_api_keys:
+            _aihubmix = os.getenv('AIHUBMIX_KEY', '').strip()
+            _single_openai = os.getenv('OPENAI_API_KEY', '').strip()
+            _fallback_key = _aihubmix or _single_openai
+            if _fallback_key:
+                openai_api_keys = [_fallback_key]
+
+        # DEEPSEEK_API_KEYS > DEEPSEEK_API_KEY (independent from OpenAI-compatible layer)
+        _deepseek_keys_raw = os.getenv('DEEPSEEK_API_KEYS', '')
+        deepseek_api_keys = [k.strip() for k in _deepseek_keys_raw.split(',') if k.strip()]
+        if not deepseek_api_keys:
+            _single_deepseek = os.getenv('DEEPSEEK_API_KEY', '').strip()
+            if _single_deepseek:
+                deepseek_api_keys = [_single_deepseek]
+
+        # LITELLM_MODEL: explicit config takes precedence; else infer from available keys
+        litellm_model = os.getenv('LITELLM_MODEL', '').strip()
+        if not litellm_model:
+            _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview').strip()
+            _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022').strip()
+            _openai_model_name = os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip()
+            if gemini_api_keys:
+                litellm_model = f'gemini/{_gemini_model_name}'
+            elif anthropic_api_keys:
+                litellm_model = f'anthropic/{_anthropic_model_name}'
+            elif deepseek_api_keys:
+                litellm_model = 'deepseek/deepseek-chat'
+            elif openai_api_keys:
+                # For openai-compatible models, add prefix only if not already prefixed
+                if '/' not in _openai_model_name:
+                    litellm_model = f'openai/{_openai_model_name}'
+                else:
+                    litellm_model = _openai_model_name
+
+        # LITELLM_FALLBACK_MODELS: comma-separated list of fallback models
+        _fallback_str = os.getenv('LITELLM_FALLBACK_MODELS', '')
+        if _fallback_str.strip():
+            litellm_fallback_models = [m.strip() for m in _fallback_str.split(',') if m.strip()]
+        else:
+            # Backward compat: use gemini_model_fallback when primary is gemini
+            _gemini_fallback = os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash').strip()
+            if litellm_model.startswith('gemini/') and _gemini_fallback:
+                _fb = f'gemini/{_gemini_fallback}' if '/' not in _gemini_fallback else _gemini_fallback
+                litellm_fallback_models = [_fb]
+            else:
+                litellm_fallback_models = []
+
+        # === LLM Channels + YAML config ===
+        litellm_config_path = os.getenv('LITELLM_CONFIG', '').strip() or None
+        llm_models_source = "legacy_env"
+        llm_channels: List[Dict[str, Any]] = []
+        llm_model_list: List[Dict[str, Any]] = []
+
+        # Priority 1: LITELLM_CONFIG (standard LiteLLM YAML config file)
+        if litellm_config_path:
+            llm_model_list = cls._parse_litellm_yaml(litellm_config_path)
+            if llm_model_list:
+                llm_models_source = "litellm_config"
+
+        # Priority 2: LLM_CHANNELS (env var based channel config)
+        if not llm_model_list:
+            _channels_str = os.getenv('LLM_CHANNELS', '').strip()
+            if _channels_str:
+                llm_channels = cls._parse_llm_channels(_channels_str)
+                llm_model_list = cls._channels_to_model_list(llm_channels)
+                if llm_model_list:
+                    llm_models_source = "llm_channels"
+
+        # Priority 3: Legacy env vars → auto-build model_list (backward compatible)
+        if not llm_model_list:
+            llm_model_list = cls._legacy_keys_to_model_list(
+                gemini_api_keys, anthropic_api_keys, openai_api_keys,
+                os.getenv('OPENAI_BASE_URL') or (
+                    'https://aihubmix.com/v1' if os.getenv('AIHUBMIX_KEY') else None
+                ),
+                deepseek_api_keys,
+            )
+            if llm_model_list:
+                llm_models_source = "legacy_env"
+
+        # Auto-infer LITELLM_MODEL from channels when not explicitly set
+        if not litellm_model and llm_channels:
+            for _ch in llm_channels:
+                if _ch.get('models'):
+                    litellm_model = _ch['models'][0]
+                    break
+
+        # Auto-infer LITELLM_FALLBACK_MODELS from channels when not explicitly set
+        if not litellm_fallback_models and llm_channels and litellm_model:
+            _all_ch_models: List[str] = []
+            for _ch in llm_channels:
+                _all_ch_models.extend(_ch.get('models', []))
+            _seen = {litellm_model}
+            litellm_fallback_models = [
+                m for m in _all_ch_models
+                if m not in _seen and not _seen.add(m)  # type: ignore[func-returns-value]
+            ]
+
+        # 解析搜索引擎 API Keys（支持多个 key，逗号分隔）
+        bocha_keys_str = os.getenv('BOCHA_API_KEYS', '')
+        bocha_api_keys = [k.strip() for k in bocha_keys_str.split(',') if k.strip()]
+
+        minimax_keys_str = os.getenv('MINIMAX_API_KEYS', '')
+        minimax_api_keys = [k.strip() for k in minimax_keys_str.split(',') if k.strip()]
+        
+        tavily_keys_str = os.getenv('TAVILY_API_KEYS', '')
+        tavily_api_keys = [k.strip() for k in tavily_keys_str.split(',') if k.strip()]
+        
+        serpapi_keys_str = os.getenv('SERPAPI_API_KEYS', '')
+        serpapi_keys = [k.strip() for k in serpapi_keys_str.split(',') if k.strip()]
+
+        brave_keys_str = os.getenv('BRAVE_API_KEYS', '')
+        brave_api_keys = [k.strip() for k in brave_keys_str.split(',') if k.strip()]
+
+        _raw_urls = [u.strip() for u in os.getenv('SEARXNG_BASE_URLS', '').split(',') if u.strip()]
+        searxng_base_urls = []
+        invalid_searxng_urls = []
+        for u in _raw_urls:
+            p = urlparse(u)
+            if p.scheme in ('http', 'https') and p.netloc:
+                searxng_base_urls.append(u)
+            else:
+                invalid_searxng_urls.append(u)
+        if invalid_searxng_urls:
+            import logging
+            logging.getLogger(__name__).warning(
+                "SEARXNG_BASE_URLS 中存在无效 URL，已忽略: %s",
+                ", ".join(invalid_searxng_urls[:3]),
+            )
+
+        # 企微消息类型与最大字节数逻辑
+        wechat_msg_type = os.getenv('WECHAT_MSG_TYPE', 'markdown')
+        wechat_msg_type_lower = wechat_msg_type.lower()
+        wechat_max_bytes_env = os.getenv('WECHAT_MAX_BYTES')
+        if wechat_max_bytes_env not in (None, ''):
+            wechat_max_bytes = int(wechat_max_bytes_env)
+        else:
+            # 未显式配置时，根据消息类型选择默认字节数
+            wechat_max_bytes = 2048 if wechat_msg_type_lower == 'text' else 4000
+        
+        return cls(
+            stock_list=stock_list,
+            feishu_app_id=os.getenv('FEISHU_APP_ID'),
+            feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
+            feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
+            tushare_token=os.getenv('TUSHARE_TOKEN'),
+            litellm_model=litellm_model,
+            litellm_fallback_models=litellm_fallback_models,
+            litellm_config_path=litellm_config_path,
+            llm_models_source=llm_models_source,
+            llm_channels=llm_channels,
+            llm_model_list=llm_model_list,
+            gemini_api_keys=gemini_api_keys,
+            anthropic_api_keys=anthropic_api_keys,
+            openai_api_keys=openai_api_keys,
+            deepseek_api_keys=deepseek_api_keys,
+            gemini_api_key=os.getenv('GEMINI_API_KEY'),
+            gemini_model=os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview'),
+            gemini_model_fallback=os.getenv('GEMINI_MODEL_FALLBACK', 'gemini-2.5-flash'),
+            gemini_temperature=float(os.getenv('GEMINI_TEMPERATURE', '0.7')),
+            gemini_request_delay=float(os.getenv('GEMINI_REQUEST_DELAY', '2.0')),
+            gemini_max_retries=int(os.getenv('GEMINI_MAX_RETRIES', '5')),
+            gemini_retry_delay=float(os.getenv('GEMINI_RETRY_DELAY', '5.0')),
+            anthropic_api_key=os.getenv('ANTHROPIC_API_KEY'),
+            anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022'),
+            anthropic_temperature=float(os.getenv('ANTHROPIC_TEMPERATURE', '0.7')),
+            anthropic_max_tokens=int(os.getenv('ANTHROPIC_MAX_TOKENS', '8192')),
+            # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
+            # Within the OpenAI-compatible layer: AIHUBMIX_KEY takes priority over OPENAI_API_KEY.
+            # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
+            # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
+            # OPENAI_BASE_URL override is provided.
+            # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-4o, gpt-4o-free, deepseek-chat).
+            openai_api_key=os.getenv('AIHUBMIX_KEY') or os.getenv('OPENAI_API_KEY') or None,
+            openai_base_url=os.getenv('OPENAI_BASE_URL') or (
+                'https://aihubmix.com/v1' if os.getenv('AIHUBMIX_KEY') else None
+            ),  # noqa: E501
+            openai_model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
+            openai_vision_model=os.getenv('OPENAI_VISION_MODEL') or None,
+            openai_temperature=float(os.getenv('OPENAI_TEMPERATURE', '0.7')),
+            # Vision model: VISION_MODEL > OPENAI_VISION_MODEL (alias) > default
+            vision_model=(
+                os.getenv('VISION_MODEL')
+                or os.getenv('OPENAI_VISION_MODEL')
+                or ""
+            ),
+            vision_provider_priority=os.getenv('VISION_PROVIDER_PRIORITY', 'gemini,anthropic,openai'),
+            bocha_api_keys=bocha_api_keys,
+            minimax_api_keys=minimax_api_keys,
+            tavily_api_keys=tavily_api_keys,
+            brave_api_keys=brave_api_keys,
+            serpapi_keys=serpapi_keys,
+            searxng_base_urls=searxng_base_urls,
+            news_max_age_days=max(1, int(os.getenv('NEWS_MAX_AGE_DAYS', '3'))),
+            bias_threshold=max(1.0, float(os.getenv('BIAS_THRESHOLD', '5.0'))),
+            agent_mode=os.getenv('AGENT_MODE', 'false').lower() == 'true',
+            agent_max_steps=int(os.getenv('AGENT_MAX_STEPS', '10')),
+            agent_skills=[s.strip() for s in os.getenv('AGENT_SKILLS', '').split(',') if s.strip()],
+            agent_strategy_dir=os.getenv('AGENT_STRATEGY_DIR'),
+            wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
+            feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
+            telegram_bot_token=os.getenv('TELEGRAM_BOT_TOKEN'),
+            telegram_chat_id=os.getenv('TELEGRAM_CHAT_ID'),
+            telegram_message_thread_id=os.getenv('TELEGRAM_MESSAGE_THREAD_ID'),
+            email_sender=os.getenv('EMAIL_SENDER'),
+            email_sender_name=os.getenv('EMAIL_SENDER_NAME', 'daily_stock_analysis股票分析助手'),
+            email_password=os.getenv('EMAIL_PASSWORD'),
+            email_receivers=[r.strip() for r in os.getenv('EMAIL_RECEIVERS', '').split(',') if r.strip()],
+            stock_email_groups=cls._parse_stock_email_groups(),
+            pushover_user_key=os.getenv('PUSHOVER_USER_KEY'),
+            pushover_api_token=os.getenv('PUSHOVER_API_TOKEN'),
+            pushplus_token=os.getenv('PUSHPLUS_TOKEN'),
+            pushplus_topic=os.getenv('PUSHPLUS_TOPIC'),
+            serverchan3_sendkey=os.getenv('SERVERCHAN3_SENDKEY'),
+            custom_webhook_urls=[u.strip() for u in os.getenv('CUSTOM_WEBHOOK_URLS', '').split(',') if u.strip()],
+            custom_webhook_bearer_token=os.getenv('CUSTOM_WEBHOOK_BEARER_TOKEN'),
+            webhook_verify_ssl=os.getenv('WEBHOOK_VERIFY_SSL', 'true').lower() == 'true',
+            discord_bot_token=os.getenv('DISCORD_BOT_TOKEN'),
+            discord_main_channel_id=os.getenv('DISCORD_MAIN_CHANNEL_ID'),
+            discord_webhook_url=os.getenv('DISCORD_WEBHOOK_URL'),
+            astrbot_url=os.getenv('ASTRBOT_URL'),
+            astrbot_token=os.getenv('ASTRBOT_TOKEN'),
+            single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
+            report_type=cls._parse_report_type(os.getenv('REPORT_TYPE', 'simple')),
+            report_summary_only=os.getenv('REPORT_SUMMARY_ONLY', 'false').lower() == 'true',
+            report_templates_dir=os.getenv('REPORT_TEMPLATES_DIR', 'templates'),
+            report_renderer_enabled=os.getenv('REPORT_RENDERER_ENABLED', 'false').lower() == 'true',
+            report_integrity_enabled=os.getenv('REPORT_INTEGRITY_ENABLED', 'true').lower() == 'true',
+            report_integrity_retry=int(os.getenv('REPORT_INTEGRITY_RETRY', '1')),
+            report_history_compare_n=int(os.getenv('REPORT_HISTORY_COMPARE_N', '0')),
+            analysis_delay=float(os.getenv('ANALYSIS_DELAY', '0')),
+            merge_email_notification=os.getenv('MERGE_EMAIL_NOTIFICATION', 'false').lower() == 'true',
+            feishu_max_bytes=int(os.getenv('FEISHU_MAX_BYTES', '20000')),
+            wechat_max_bytes=wechat_max_bytes,
+            wechat_msg_type=wechat_msg_type_lower,
+            discord_max_words=int(os.getenv('DISCORD_MAX_WORDS', '2000')),
+            markdown_to_image_channels=[
+                c.strip().lower()
+                for c in os.getenv('MARKDOWN_TO_IMAGE_CHANNELS', '').split(',')
+                if c.strip()
+            ],
+            markdown_to_image_max_chars=int(os.getenv('MARKDOWN_TO_IMAGE_MAX_CHARS', '15000')),
+            md2img_engine=cls._parse_md2img_engine(os.getenv('MD2IMG_ENGINE', 'wkhtmltoimage')),
+            prefetch_realtime_quotes=os.getenv('PREFETCH_REALTIME_QUOTES', 'true').lower() == 'true',
+            database_path=os.getenv('DATABASE_PATH', './data/stock_analysis.db'),
+            save_context_snapshot=os.getenv('SAVE_CONTEXT_SNAPSHOT', 'true').lower() == 'true',
+            backtest_enabled=os.getenv('BACKTEST_ENABLED', 'true').lower() == 'true',
+            backtest_eval_window_days=int(os.getenv('BACKTEST_EVAL_WINDOW_DAYS', '10')),
+            backtest_min_age_days=int(os.getenv('BACKTEST_MIN_AGE_DAYS', '14')),
+            backtest_engine_version=os.getenv('BACKTEST_ENGINE_VERSION', 'v1'),
+            backtest_neutral_band_pct=float(os.getenv('BACKTEST_NEUTRAL_BAND_PCT', '2.0')),
+            log_dir=os.getenv('LOG_DIR', './logs'),
+            log_level=os.getenv('LOG_LEVEL', 'INFO'),
+            max_workers=int(os.getenv('MAX_WORKERS', '3')),
+            debug=os.getenv('DEBUG', 'false').lower() == 'true',
+            config_validate_mode=os.getenv('CONFIG_VALIDATE_MODE', 'warn').lower(),
+            http_proxy=os.getenv('HTTP_PROXY'),
+            https_proxy=os.getenv('HTTPS_PROXY'),
+            schedule_enabled=os.getenv('SCHEDULE_ENABLED', 'false').lower() == 'true',
+            schedule_time=os.getenv('SCHEDULE_TIME', '18:00'),
+            schedule_run_immediately=os.getenv('SCHEDULE_RUN_IMMEDIATELY', 'true').lower() == 'true',
+            run_immediately=os.getenv('RUN_IMMEDIATELY', 'true').lower() == 'true',
+            market_review_enabled=os.getenv('MARKET_REVIEW_ENABLED', 'true').lower() == 'true',
+            market_review_region=cls._parse_market_review_region(
+                os.getenv('MARKET_REVIEW_REGION', 'cn')
+            ),
+            trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
+            webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
+            webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
+            webui_port=int(os.getenv('WEBUI_PORT', '8000')),
+            # 机器人配置
+            bot_enabled=os.getenv('BOT_ENABLED', 'true').lower() == 'true',
+            bot_command_prefix=os.getenv('BOT_COMMAND_PREFIX', '/'),
+            bot_rate_limit_requests=int(os.getenv('BOT_RATE_LIMIT_REQUESTS', '10')),
+            bot_rate_limit_window=int(os.getenv('BOT_RATE_LIMIT_WINDOW', '60')),
+            bot_admin_users=[u.strip() for u in os.getenv('BOT_ADMIN_USERS', '').split(',') if u.strip()],
+            # 飞书机器人
+            feishu_verification_token=os.getenv('FEISHU_VERIFICATION_TOKEN'),
+            feishu_encrypt_key=os.getenv('FEISHU_ENCRYPT_KEY'),
+            feishu_stream_enabled=os.getenv('FEISHU_STREAM_ENABLED', 'false').lower() == 'true',
+            # 钉钉机器人
+            dingtalk_app_key=os.getenv('DINGTALK_APP_KEY'),
+            dingtalk_app_secret=os.getenv('DINGTALK_APP_SECRET'),
+            dingtalk_stream_enabled=os.getenv('DINGTALK_STREAM_ENABLED', 'false').lower() == 'true',
+            # 企业微信机器人
+            wecom_corpid=os.getenv('WECOM_CORPID'),
+            wecom_token=os.getenv('WECOM_TOKEN'),
+            wecom_encoding_aes_key=os.getenv('WECOM_ENCODING_AES_KEY'),
+            wecom_agent_id=os.getenv('WECOM_AGENT_ID'),
+            # Telegram
+            telegram_webhook_secret=os.getenv('TELEGRAM_WEBHOOK_SECRET'),
+            # Discord 机器人扩展配置
+            discord_bot_status=os.getenv('DISCORD_BOT_STATUS', 'A股智能分析 | /help'),
+            # 实时行情增强数据配置
+            enable_realtime_quote=os.getenv('ENABLE_REALTIME_QUOTE', 'true').lower() == 'true',
+            enable_realtime_technical_indicators=os.getenv(
+                'ENABLE_REALTIME_TECHNICAL_INDICATORS', 'true'
+            ).lower() == 'true',
+            enable_chip_distribution=os.getenv('ENABLE_CHIP_DISTRIBUTION', 'true').lower() == 'true',
+            # 东财接口补丁开关
+            enable_eastmoney_patch=os.getenv('ENABLE_EASTMONEY_PATCH', 'false').lower() == 'true',
+            # 实时行情数据源优先级：
+            # - tencent: 腾讯财经，有量比/换手率/PE/PB等，单股查询稳定（推荐）
+            # - akshare_sina: 新浪财经，基本行情稳定，但无量比
+            # - efinance/akshare_em: 东财全量接口，数据最全但容易被封
+            # - tushare: Tushare Pro，需要2000积分，数据全面
+            realtime_source_priority=cls._resolve_realtime_source_priority(),
+            realtime_cache_ttl=int(os.getenv('REALTIME_CACHE_TTL', '600')),
+            circuit_breaker_cooldown=int(os.getenv('CIRCUIT_BREAKER_COOLDOWN', '300'))
+        )
+    
+    @classmethod
+    def _parse_litellm_yaml(cls, config_path: str) -> List[Dict[str, Any]]:
+        """Parse a standard LiteLLM config YAML file into Router model_list.
+
+        Supports the ``os.environ/VAR_NAME`` syntax for secret references.
+        Returns an empty list on any error (logged, never raises).
+        """
+        import logging
+        _logger = logging.getLogger(__name__)
+        try:
+            import yaml
+        except ImportError:
+            _logger.warning("PyYAML not installed; LITELLM_CONFIG ignored. Install with: pip install pyyaml")
+            return []
+
+        path = Path(config_path)
+        if not path.is_absolute():
+            path = Path(__file__).parent.parent / path
+        if not path.exists():
+            _logger.warning(f"LITELLM_CONFIG file not found: {path}")
+            return []
+
+        try:
+            with open(path, encoding='utf-8') as f:
+                yaml_config = yaml.safe_load(f) or {}
+        except Exception as e:
+            _logger.warning(f"Failed to parse LITELLM_CONFIG: {e}")
+            return []
+
+        model_list = yaml_config.get('model_list', [])
+        if not isinstance(model_list, list):
+            _logger.warning("LITELLM_CONFIG: model_list must be a list")
+            return []
+
+        # Resolve os.environ/ references in string params
+        for entry in model_list:
+            params = entry.get('litellm_params', {})
+            for key in list(params.keys()):
+                val = params.get(key)
+                if isinstance(val, str) and val.startswith('os.environ/'):
+                    env_name = val.split('/', 1)[1]
+                    params[key] = os.getenv(env_name, '')
+
+        _logger.info(f"LITELLM_CONFIG: loaded {len(model_list)} model deployment(s) from {path}")
+        return model_list
+
+    @classmethod
+    def _parse_llm_channels(cls, channels_str: str) -> List[Dict[str, Any]]:
+        """Parse LLM_CHANNELS env var and per-channel env vars.
+
+        Format:
+            LLM_CHANNELS=aihubmix,deepseek,gemini
+            LLM_AIHUBMIX_BASE_URL=https://aihubmix.com/v1
+            LLM_AIHUBMIX_API_KEY=sk-xxx           (or LLM_AIHUBMIX_API_KEYS=k1,k2)
+            LLM_AIHUBMIX_MODELS=openai/gpt-4o-mini,openai/claude-3-5-sonnet
+        """
+        import logging
+        _logger = logging.getLogger(__name__)
+
+        channels: List[Dict[str, Any]] = []
+        for raw_name in channels_str.split(','):
+            ch_name = raw_name.strip()
+            if not ch_name:
+                continue
+            ch_upper = ch_name.upper()
+
+            base_url = os.getenv(f'LLM_{ch_upper}_BASE_URL', '').strip() or None
+
+            # API keys: LLM_{NAME}_API_KEYS (multi) > LLM_{NAME}_API_KEY (single)
+            api_keys_raw = os.getenv(f'LLM_{ch_upper}_API_KEYS', '')
+            api_keys = [k.strip() for k in api_keys_raw.split(',') if k.strip()]
+            if not api_keys:
+                single_key = os.getenv(f'LLM_{ch_upper}_API_KEY', '').strip()
+                if single_key:
+                    api_keys = [single_key]
+
+            # Models
+            models_raw = os.getenv(f'LLM_{ch_upper}_MODELS', '')
+            models = [m.strip() for m in models_raw.split(',') if m.strip()]
+            # Auto-prefix: models without provider prefix in channels with base_url → openai/
+            models = [
+                (f'openai/{m}' if '/' not in m and base_url else m)
+                for m in models
+            ]
+
+            # Extra headers (JSON string, optional)
+            extra_headers_raw = os.getenv(f'LLM_{ch_upper}_EXTRA_HEADERS', '').strip()
+            extra_headers = None
+            if extra_headers_raw:
+                try:
+                    extra_headers = json.loads(extra_headers_raw)
+                except json.JSONDecodeError:
+                    _logger.warning(f"LLM_{ch_upper}_EXTRA_HEADERS: invalid JSON, ignored")
+
+            if not api_keys:
+                _logger.warning(f"LLM channel '{ch_name}': no API key configured, skipped")
+                continue
+            if not models:
+                _logger.warning(f"LLM channel '{ch_name}': no models configured, skipped")
+                continue
+
+            channels.append({
+                'name': ch_name.lower(),
+                'base_url': base_url,
+                'api_keys': api_keys,
+                'models': models,
+                'extra_headers': extra_headers,
+            })
+            _logger.info(f"LLM channel '{ch_name}': {len(models)} model(s), {len(api_keys)} key(s)")
+
+        return channels
+
+    @classmethod
+    def _channels_to_model_list(cls, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert parsed LLM channels to LiteLLM Router model_list format."""
+        model_list: List[Dict[str, Any]] = []
+        for ch in channels:
+            for model_name in ch['models']:
+                for api_key in ch['api_keys']:
+                    litellm_params: Dict[str, Any] = {
+                        'model': model_name,
+                        'api_key': api_key,
+                    }
+                    if ch['base_url']:
+                        litellm_params['api_base'] = ch['base_url']
+                    # Auto-inject aihubmix sponsored header
+                    headers = dict(ch.get('extra_headers') or {})
+                    if ch['base_url'] and 'aihubmix.com' in ch['base_url']:
+                        headers.setdefault('APP-Code', 'GPIJ3886')
+                    if headers:
+                        litellm_params['extra_headers'] = headers
+
+                    model_list.append({
+                        'model_name': model_name,
+                        'litellm_params': litellm_params,
+                    })
+        return model_list
+
+    @classmethod
+    def _legacy_keys_to_model_list(
+        cls,
+        gemini_keys: List[str],
+        anthropic_keys: List[str],
+        openai_keys: List[str],
+        openai_base_url: Optional[str],
+        deepseek_keys: Optional[List[str]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Build Router model_list from legacy per-provider keys (backward compat).
+
+        Returns a model_list where each provider's keys are expanded into
+        deployments, keyed by placeholder model_name tokens.  The analyzer
+        resolves actual model_names at call time from LITELLM_MODEL /
+        LITELLM_FALLBACK_MODELS.
+        """
+        model_list: List[Dict[str, Any]] = []
+
+        # Gemini keys
+        for k in gemini_keys:
+            if k and len(k) >= 8:
+                model_list.append({
+                    'model_name': '__legacy_gemini__',
+                    'litellm_params': {'model': '__legacy_gemini__', 'api_key': k},
+                })
+
+        # Anthropic keys
+        for k in anthropic_keys:
+            if k and len(k) >= 8:
+                model_list.append({
+                    'model_name': '__legacy_anthropic__',
+                    'litellm_params': {'model': '__legacy_anthropic__', 'api_key': k},
+                })
+
+        # OpenAI-compatible keys
+        for k in openai_keys:
+            if k and len(k) >= 8:
+                params: Dict[str, Any] = {'model': '__legacy_openai__', 'api_key': k}
+                if openai_base_url:
+                    params['api_base'] = openai_base_url
+                if openai_base_url and 'aihubmix.com' in openai_base_url:
+                    params['extra_headers'] = {'APP-Code': 'GPIJ3886'}
+                model_list.append({
+                    'model_name': '__legacy_openai__',
+                    'litellm_params': params,
+                })
+
+        # DeepSeek keys (native litellm provider — auto-resolves api_base)
+        for k in (deepseek_keys or []):
+            if k and len(k) >= 8:
+                model_list.append({
+                    'model_name': '__legacy_deepseek__',
+                    'litellm_params': {
+                        'model': '__legacy_deepseek__',
+                        'api_key': k,
+                    },
+                })
+
+        return model_list
+
+    @classmethod
+    def _parse_stock_email_groups(cls) -> List[Tuple[List[str], List[str]]]:
+        """
+        Parse STOCK_GROUP_N and EMAIL_GROUP_N from environment.
+        Returns [(stocks, emails), ...] ordered by group index.
+        """
+        groups: dict = {}
+        stock_re = re.compile(r'^STOCK_GROUP_(\d+)$', re.IGNORECASE)
+        email_re = re.compile(r'^EMAIL_GROUP_(\d+)$', re.IGNORECASE)
+        for key in os.environ:
+            m = stock_re.match(key)
+            if m:
+                idx = int(m.group(1))
+                val = os.environ[key].strip()
+                groups.setdefault(idx, {})['stocks'] = [c.strip() for c in val.split(',') if c.strip()]
+            m = email_re.match(key)
+            if m:
+                idx = int(m.group(1))
+                val = os.environ[key].strip()
+                groups.setdefault(idx, {})['emails'] = [e.strip() for e in val.split(',') if e.strip()]
+        result = []
+        for idx in sorted(groups.keys()):
+            g = groups[idx]
+            if 'stocks' in g and 'emails' in g and g['stocks'] and g['emails']:
+                result.append((g['stocks'], g['emails']))
+        return result
+
+    @classmethod
+    def _parse_report_type(cls, value: str) -> str:
+        """Parse REPORT_TYPE, fallback to simple for invalid values (supports brief)."""
+        v = (value or 'simple').strip().lower()
+        if v in ('simple', 'full', 'brief'):
+            return v
+        import logging
+        logging.getLogger(__name__).warning(
+            f"REPORT_TYPE '{value}' invalid, fallback to 'simple' (valid: simple/full/brief)"
+        )
+        return 'simple'
+
+    @classmethod
+    def _parse_market_review_region(cls, value: str) -> str:
+        """解析大盘复盘市场区域，非法值记录警告后回退为 cn"""
+        import logging
+        v = (value or 'cn').strip().lower()
+        if v in ('cn', 'us', 'both'):
+            return v
+        logging.getLogger(__name__).warning(
+            f"MARKET_REVIEW_REGION 配置值 '{value}' 无效，已回退为默认值 'cn'（合法值：cn / us / both）"
+        )
+        return 'cn'
+
+    @classmethod
+    def _parse_md2img_engine(cls, value: str) -> str:
+        """Parse MD2IMG_ENGINE, fallback to wkhtmltoimage for invalid values (Issue #455)."""
+        v = (value or 'wkhtmltoimage').strip().lower()
+        if v in ('wkhtmltoimage', 'markdown-to-file'):
+            return v
+        if v:
+            import logging
+            logging.getLogger(__name__).warning(
+                f"MD2IMG_ENGINE '{value}' invalid, fallback to 'wkhtmltoimage' "
+                "(valid: wkhtmltoimage | markdown-to-file)"
+            )
+        return 'wkhtmltoimage'
+
+    @classmethod
+    def _resolve_realtime_source_priority(cls) -> str:
+        """
+        Resolve realtime source priority with automatic tushare injection.
+
+        When TUSHARE_TOKEN is configured but REALTIME_SOURCE_PRIORITY is not
+        explicitly set, automatically prepend 'tushare' to the default priority
+        so that the paid data source is utilized for realtime quotes as well.
+        """
+        explicit = os.getenv('REALTIME_SOURCE_PRIORITY')
+        default_priority = 'tencent,akshare_sina,efinance,akshare_em'
+
+        if explicit:
+            # User explicitly set priority, respect it
+            return explicit
+
+        tushare_token = os.getenv('TUSHARE_TOKEN', '').strip()
+        if tushare_token:
+            # Token configured but no explicit priority override
+            # Prepend tushare so the paid source is tried first
+            import logging
+            logger = logging.getLogger(__name__)
+            resolved = f'tushare,{default_priority}'
+            logger.info(
+                f"TUSHARE_TOKEN detected, auto-injecting tushare into realtime priority: {resolved}"
+            )
+            return resolved
+
+        return default_priority
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """重置单例（主要用于测试）"""
+        cls._instance = None
+
+    def refresh_stock_list(self) -> None:
+        """
+        热读取 STOCK_LIST 环境变量并更新配置中的自选股列表
+        
+        支持两种配置方式：
+        1. .env 文件（本地开发、定时任务模式） - 修改后下次执行自动生效
+        2. 系统环境变量（GitHub Actions、Docker） - 启动时固定，运行中不变
+        """
+        # 优先从 .env 文件读取最新配置，这样即使在容器环境中修改了 .env 文件，
+        # 也能获取到最新的股票列表配置
+        env_file = os.getenv("ENV_FILE")
+        env_path = Path(env_file) if env_file else (Path(__file__).parent.parent / '.env')
+        stock_list_str = ''
+        if env_path.exists():
+            # 直接从 .env 文件读取最新的配置
+            env_values = dotenv_values(env_path)
+            stock_list_str = (env_values.get('STOCK_LIST') or '').strip()
+
+        # 如果 .env 文件不存在或未配置，才尝试从系统环境变量读取
+        if not stock_list_str:
+            stock_list_str = os.getenv('STOCK_LIST', '')
+
+        stock_list = [
+            (c or "").strip().upper()
+            for c in stock_list_str.split(',')
+            if (c or "").strip()
+        ]
+
+        if not stock_list:
+            stock_list = ['000001']
+
+        self.stock_list = stock_list
+    
+    def validate_structured(self) -> List[ConfigIssue]:
+        """Return structured validation issues with severity levels.
+
+        Covers all three LLM configuration tiers introduced by PR #494:
+        - LITELLM_CONFIG (YAML)
+        - LLM_CHANNELS (env)
+        - Legacy per-provider keys
+
+        Returns:
+            List of ConfigIssue objects, each carrying a severity
+            ("error" | "warning" | "info"), a human-readable message, and the
+            primary environment variable / field name it relates to.
+        """
+        issues: List[ConfigIssue] = []
+
+        # --- Stock list ---
+        if not self.stock_list:
+            issues.append(ConfigIssue(
+                severity="error",
+                message="未配置自选股列表 (STOCK_LIST)",
+                field="STOCK_LIST",
+            ))
+
+        # --- Data sources (informational only) ---
+        if not self.tushare_token:
+            issues.append(ConfigIssue(
+                severity="info",
+                message="未配置 Tushare Token，将使用其他数据源",
+                field="TUSHARE_TOKEN",
+            ))
+
+        # --- LLM availability ---
+        # llm_model_list is populated for YAML / channels / managed legacy keys.
+        # Other LiteLLM-native providers (for example cohere/*) run through the
+        # direct litellm env path and therefore do not populate llm_model_list.
+        has_direct_env_model = bool(self.litellm_model) and _uses_direct_env_provider(self.litellm_model)
+        if not self.llm_model_list and not has_direct_env_model:
+            issues.append(ConfigIssue(
+                severity="error",
+                message=(
+                    "未配置任何 LLM（LITELLM_CONFIG / LLM_CHANNELS / *_API_KEY），"
+                    "AI 分析功能将不可用"
+                ),
+                field="LITELLM_CONFIG",
+            ))
+        elif not self.litellm_model:
+            issues.append(ConfigIssue(
+                severity="info",
+                message=(
+                    "LITELLM_MODEL 未配置，将自动从可用 API Key 推断模型。"
+                    "建议尽早配置 LITELLM_MODEL（格式如 gemini/gemini-2.5-flash）"
+                ),
+                field="LITELLM_MODEL",
+            ))
+
+        # --- Search engine (informational only) ---
+        if not (
+            self.bocha_api_keys
+            or self.minimax_api_keys
+            or self.tavily_api_keys
+            or self.brave_api_keys
+            or self.serpapi_keys
+            or self.searxng_base_urls
+        ):
+            issues.append(ConfigIssue(
+                severity="info",
+                message="未配置搜索引擎 API Key (Bocha/MiniMax/Tavily/Brave/SerpAPI/SearXNG)，新闻搜索功能将不可用",
+                field="BOCHA_API_KEY",
+            ))
+
+        # --- Notification channels ---
+        has_notification = bool(
+            self.wechat_webhook_url
+            or self.feishu_webhook_url
+            or (self.telegram_bot_token and self.telegram_chat_id)
+            or (self.email_sender and self.email_password)
+            or (self.pushover_user_key and self.pushover_api_token)
+            or self.pushplus_token
+            or self.serverchan3_sendkey
+            or self.custom_webhook_urls
+            or (self.discord_bot_token and self.discord_main_channel_id)
+            or self.discord_webhook_url
+        )
+
+        if not has_notification:
+            issues.append(ConfigIssue(
+                severity="warning",
+                message="未配置通知渠道，将不发送推送通知",
+                field="WECHAT_WEBHOOK_URL",
+            ))
+
+        # --- Deprecated field migration hints ---
+        if os.getenv("OPENAI_VISION_MODEL"):
+            issues.append(ConfigIssue(
+                severity="info",
+                message=(
+                    "OPENAI_VISION_MODEL 已废弃，请改用 VISION_MODEL。"
+                    "当前值已自动迁移，建议更新配置文件以消除此提示。"
+                ),
+                field="OPENAI_VISION_MODEL",
+            ))
+
+        # --- Vision key availability ---
+        # Only warn when user explicitly set VISION_MODEL (or OPENAI_VISION_MODEL alias).
+        # Skipped when vision_model is empty (Vision not intentionally configured).
+        if self.vision_model:
+            # Maps provider prefix → the corresponding key list tracked by Config.
+            # vertex_ai shares gemini keys; other LiteLLM-native providers are not
+            # in this map (their keys come from env vars, which we cannot inspect here).
+            _VISION_KEY_MAP = {
+                "gemini": self.gemini_api_keys,
+                "vertex_ai": self.gemini_api_keys,
+                "anthropic": self.anthropic_api_keys,
+                "openai": self.openai_api_keys,
+                "deepseek": self.deepseek_api_keys,
+            }
+            # Derive the primary model's provider prefix so that its key is also
+            # checked even when the provider is absent from VISION_PROVIDER_PRIORITY.
+            _primary_prefix = (
+                self.vision_model.split("/")[0]
+                if "/" in self.vision_model
+                else "openai"
+            )
+            _priority_providers = [
+                p.strip().lower()
+                for p in self.vision_provider_priority.split(",")
+                if p.strip()
+            ]
+            # Union: fallback providers + primary model's own provider
+            _all_providers = {_primary_prefix} | set(_priority_providers)
+
+            # Align with get_api_keys_for_model: keys must be non-empty and len >= 8
+            _has_any_key = any(
+                any(k and len(k) >= 8 for k in (_VISION_KEY_MAP.get(p) or []))
+                for p in _all_providers
+                if p in _VISION_KEY_MAP
+            )
+            if not _has_any_key:
+                _checked = sorted(_all_providers & _VISION_KEY_MAP.keys())
+                issues.append(ConfigIssue(
+                    severity="warning",
+                    message=(
+                        "VISION_MODEL 已配置，但未找到可用的 Vision API Key "
+                        f"（已检查：{', '.join(_checked)}）。"
+                        "图片股票代码提取功能将不可用，请配置对应的 API Key。"
+                    ),
+                    field="VISION_MODEL",
+                ))
+
+        return issues
+
+    def validate(self) -> List[str]:
+        """Return validation messages as plain strings (backward-compatible).
+
+        Internally delegates to validate_structured().  Callers that only need
+        the human-readable strings can continue to use this method unchanged.
+
+        Returns:
+            List of message strings, one per ConfigIssue.
+        """
+        return [issue.message for issue in self.validate_structured()]
+    
+    def get_db_url(self) -> str:
+        """
+        获取 SQLAlchemy 数据库连接 URL
+        
+        自动创建数据库目录（如果不存在）
+        """
+        db_path = Path(self.database_path)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        return f"sqlite:///{db_path.absolute()}"
+
+
+# === 便捷的配置访问函数 ===
+def get_config() -> Config:
+    """获取全局配置实例的快捷方式"""
+    return Config.get_instance()
+
+
+# ============================================================
+# Shared LLM helpers (used by both analyzer and agent/llm_adapter)
+# ============================================================
+
+def get_api_keys_for_model(model: str, config: Config) -> List[str]:
+    """Return explicitly managed API keys for a litellm model (legacy path only).
+
+    When llm_model_list is populated (channels / YAML), the Router handles key
+    selection, so this function is not needed.  Kept for backward compat when
+    no Router is built and a direct litellm.completion() call is needed.
+    """
+    provider = _get_litellm_provider(model)
+    if provider in {"gemini", "vertex_ai"}:
+        return [k for k in config.gemini_api_keys if k and len(k) >= 8]
+    if provider == "anthropic":
+        return [k for k in config.anthropic_api_keys if k and len(k) >= 8]
+    if provider == "deepseek":
+        return [k for k in config.deepseek_api_keys if k and len(k) >= 8]
+    if provider == "openai":
+        return [k for k in config.openai_api_keys if k and len(k) >= 8]
+    # Other LiteLLM-native providers – API key resolved from env vars
+    return []
+
+
+def extra_litellm_params(model: str, config: Config) -> Dict[str, Any]:
+    """Build extra litellm params for a model (legacy path only).
+
+    When llm_model_list is populated, the Router already carries api_base
+    and headers per-deployment, so this is not called.
+    """
+    params: Dict[str, Any] = {}
+    # deepseek/ provider: litellm auto-resolves api_base, no manual override needed
+    if model.startswith("deepseek/"):
+        return params
+    if model.startswith("openai/") or "/" not in model:
+        if config.openai_base_url:
+            params["api_base"] = config.openai_base_url
+        if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
+            params["extra_headers"] = {"APP-Code": "GPIJ3886"}
+    return params
+
+
+if __name__ == "__main__":
+    # 测试配置加载
+    config = get_config()
+    print("=== 配置加载测试 ===")
+    print(f"自选股列表: {config.stock_list}")
+    print(f"数据库路径: {config.database_path}")
+    print(f"最大并发数: {config.max_workers}")
+    print(f"调试模式: {config.debug}")
+    
+    # 验证配置
+    warnings = config.validate()
+    if warnings:
+        print("\n配置验证结果:")
+        for w in warnings:
+            print(f"  - {w}")
