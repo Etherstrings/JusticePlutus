@@ -15,6 +15,14 @@
 - 运行结束后额外生成 `summary.md`、`summary.json`、`run_meta.json`
 - 支持本地命令行、GitHub Actions `workflow_dispatch`，以及工作日自动定时触发
 
+## 回退与降级
+
+- 日线数据会按 `Tushare -> Efinance -> Akshare -> Pytdx -> Baostock -> YFinance` 串行回退
+- 实时行情按 `REALTIME_SOURCE_PRIORITY` 逐源尝试；拿到第一份可用报价后，还会从后续源补齐量比、换手率、PE/PB 等字段
+- 搜索增强当前已接入 `Bocha`、`Tavily`、`SerpAPI`；单个搜索维度失败不会阻断整只股票分析
+- LLM 层代码支持主模型加 fallback models，但当前线上主路由是 `AIHubMix -> gemini-flash-lite-latest`
+- Telegram 发送带重试和纯文本回退；多股模式下会先发单股详情，最后补发 1 条批次总览
+
 ## 本地运行
 
 ```bash

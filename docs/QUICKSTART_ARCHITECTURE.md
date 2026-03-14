@@ -10,7 +10,7 @@
 - 手动触发 `GitHub Actions`
 - 分析 `STOCK_LIST`
 - 使用 `AIHubMix OpenAI-compatible API + Gemini 模型`
-- 使用 `Tavily` 做搜索增强
+- 使用 `Bocha + Tavily + SerpAPI` 做搜索增强
 - 结果由 `Telegram Bot` 自动推送到群
 
 配套文档：
@@ -101,7 +101,9 @@ Variables 页面：
 | 名称 | 用途 | 当前首版状态 |
 |------|------|-------------|
 | `OPENAI_API_KEY` | AIHubMix Key，经 OpenAI-compatible API 调用模型 | 必填 |
-| `TAVILY_API_KEYS` | 搜索增强 | 必填 |
+| `BOCHA_API_KEYS` | 中文搜索增强 | 建议填 |
+| `TAVILY_API_KEYS` | 搜索增强 | 建议填 |
+| `SERPAPI_API_KEYS` | Google 搜索补充源 | 建议填 |
 | `TELEGRAM_BOT_TOKEN` | Telegram 机器人发消息 | 必填 |
 | `TUSHARE_TOKEN` | A 股数据源增强；若权限不足会自动回退 | 建议填 |
 
@@ -148,8 +150,8 @@ flowchart TD
     F --> F5[YFinance]
 
     D --> G[Search Layer]
-    G --> G1[Tavily]
-    G --> G2[Bocha]
+    G --> G1[Bocha]
+    G --> G2[Tavily]
     G --> G3[SerpAPI]
 
     D --> H[LLM Layer]
@@ -185,7 +187,7 @@ sequenceDiagram
     participant CLI as daily_stock_pipeline CLI
     participant PIPE as StockAnalysisPipeline
     participant DATA as Data Providers
-    participant SEARCH as Tavily
+    participant SEARCH as Search Providers
     participant LLM as AIHubMix -> Gemini
     participant TG as Telegram Bot API
     participant GROUP as Telegram Group
@@ -201,7 +203,7 @@ sequenceDiagram
     DATA-->>PIPE: 实时行情 / 补充字段
 
     PIPE->>SEARCH: search_comprehensive_intel(600519)
-    SEARCH-->>PIPE: 新闻 / 机构分析 / 风险 / 业绩 / 行业结果
+    SEARCH-->>PIPE: Bocha / Tavily / SerpAPI 结果
 
     PIPE->>LLM: prompt + technical context + news context
     LLM-->>PIPE: JSON structured analysis
@@ -210,9 +212,24 @@ sequenceDiagram
     PIPE->>TG: sendMessage(chat_id, content)
     TG-->>GROUP: 单股即时推送
 
+    PIPE->>TG: sendMessage(chat_id, batch summary)
+    TG-->>GROUP: 批次总览推送
+
     PIPE->>PIPE: save summary.md / summary.json / run_meta.json
     GH-->>U: artifact + workflow result
 ```
+
+## 4.1 回退与降级总览
+
+| 层级 | 正常路径 | 降级/回退行为 | 当前线上状态 |
+|------|----------|---------------|--------------|
+| 输入层 | `STOCK_LIST` 或 `--stocks` | `--stocks` 可临时覆盖 `STOCK_LIST` | 已启用 |
+| 日线数据层 | `Tushare -> Efinance -> Akshare -> Pytdx -> Baostock -> YFinance` | 前一源失败自动切下一个；全部失败时仍尝试用已有数据库或最小上下文继续分析 | 已验证 `Tushare` 权限不足时回退到 `Efinance` |
+| 实时行情层 | 按 `REALTIME_SOURCE_PRIORITY` 顺序尝试 | 成功拿到基础报价后，可继续用后续源补字段；连续失败的源会进入熔断冷却 | 已启用 |
+| 筹码层 | `Akshare -> Tushare -> Efinance` | 任一源失败继续试下一个；全失败返回 `None`，不阻断主流程 | 当前默认关闭 |
+| 搜索层 | `Bocha / Tavily / SerpAPI` | 单个 provider 或单个维度失败不阻断整只股票分析；失败维度留空继续跑 | 已启用并验证 |
+| LLM 层 | `AIHubMix -> gemini-flash-lite-latest` | 代码支持 `LITELLM_FALLBACK_MODELS` 和多模型 Router；当前线上未配置第二模型 | 主路由已验证 |
+| 通知层 | Telegram Markdown 消息 | 发送失败自动重试；Markdown 解析失败回退纯文本；多股时最后追加 1 条总览 | 已验证 |
 
 ## 5. 分层架构说明
 
@@ -259,6 +276,11 @@ sequenceDiagram
   - 主结果可能来自 `Tushare`
   - 缺失字段再由 `Tencent` 补齐
 
+这一层已经实现了两类抗抖动机制：
+
+- **串行 failover**：一个源失败就立即试下一个
+- **熔断冷却**：实时行情和筹码接口连续失败后，会暂时跳过该源，避免重复打坏掉的接口
+
 已经验证到的实际行为：
 
 - 当前 `TUSHARE_TOKEN` 在你账号下对 `daily` 接口权限不足
@@ -282,15 +304,23 @@ sequenceDiagram
 - 返回结构化搜索结果
 - 作为 `news_context` 给 LLM
 
-当前首版只启用：
+当前线上已接入并验证：
 
+- `Bocha`
 - `Tavily`
+- `SerpAPI`
 
-原因：
+这一层有两个关键点：
 
-- 接线最直接
-- 变量最少
-- 已经在本地 dry-run 与 GitHub Actions 中验证可用
+1. `search_stock_news()` 是串行回退。
+一个 provider 失败后，会继续试下一个 provider。
+
+2. `search_comprehensive_intel()` 是按维度轮询 provider。
+也就是说“最新消息”“机构分析”“风险排查”这些维度可能分别落到不同 provider 上；某个维度失败时，该维度会留空，但整只股票不会因此停止分析。
+
+最近一次已验证通过的搜索增强运行：
+
+- `https://github.com/Etherstrings/JusticePlutus/actions/runs/23080051185`
 
 ### 5.4 LLM 层
 
@@ -308,16 +338,29 @@ sequenceDiagram
 - `AIHubMix`
 - 其他 OpenAI-compatible 服务商
 
-当前首版实际走的是：
+当前线上实际走的是：
 
 - `AIHubMix`
 - 通过 `OpenAI-compatible API`
-- 模型：`gemini-flash-lite-latest`
+- 模型：`openai/gemini-flash-lite-latest`
 
 原因：
 
 - `gemini-flash-latest` 对这把 key 返回 404
 - `gemini-flash-lite-latest` 已经实测成功
+
+代码层已经支持：
+
+- `LITELLM_FALLBACK_MODELS`
+- 多 key Router
+- YAML / channels 配置式路由
+
+但当前 GitHub Actions 线上部署仍是单主模型路线。
+这意味着：
+
+- 如果 `AIHubMix` 当前主模型可用，分析正常完成
+- 如果主模型完全不可用，单股会退化成失败态分析结果，但整个批次仍继续执行
+- 如果你后面希望真正做到模型级自动切换，需要再补一条 `LITELLM_FALLBACK_MODELS` 或第二提供商 key
 
 ### 5.5 报告层
 
@@ -383,22 +426,14 @@ LLM 生成结构化结果后，会写出两类文件：
 
 | 项目 | 值 |
 |------|----|
-| 搜索源 | Tavily |
+| 搜索源 | Bocha + Tavily + SerpAPI |
 | 使用方式 | 多维情报搜索 |
 
 ## 7. 当前运行输出长什么样
 
-单股即时推送样式当前已经改成：
+单股详情推送样式当前已经改成：
 
 ```text
-Jarvis Daily Investment Advice
-
-🎯 2026-03-14 决策仪表盘
-共分析1只股票 | 🟢买入:0 🟡观望:1 🔴卖出:0
-
-📊 分析结果摘要
-⚪ 贵州茅台(600519): 观望 | 评分 45 | 看空
-
 ⚪ 贵州茅台 (600519)
 
 📌 核心结论: 均线系统处于空头排列，技术趋势不佳，建议空仓者继续观望，持仓者暂不操作。
@@ -422,6 +457,20 @@ Jarvis Daily Investment Advice
 分析模型: openai/gemini-flash-lite-latest
 ```
 
+批次总览推送会在所有股票分析完成后再单独发送 1 条：
+
+```text
+Jarvis Daily Investment Advice
+
+🎯 2026-03-14 决策仪表盘
+共分析5只股票 | 🟢买入:2 🟡观望:2 🔴卖出:1
+
+📊 分析结果摘要
+🟢 招商银行(600036): 买入 | 评分 88 | 强烈看多
+⚪ 贵州茅台(600519): 观望 | 评分 45 | 看空
+...
+```
+
 ## 8. 为什么首版能跑通
 
 因为它满足了一个最小闭环：
@@ -429,7 +478,7 @@ Jarvis Daily Investment Advice
 1. 股票输入只有一个：`600519`
 2. 并发固定为 `1`
 3. 不启用不稳定筹码接口
-4. 搜索只接 `Tavily`
+4. 搜索层虽然能接多 provider，但当前结构仍然清晰可控
 5. 模型只接一条可验证的 `AIHubMix -> Gemini`
 6. 通知只接 `Telegram`
 
@@ -456,13 +505,18 @@ Jarvis Daily Investment Advice
 已验证成功的 run：
 
 - `https://github.com/Etherstrings/JusticePlutus/actions/runs/23061254705`
+- `https://github.com/Etherstrings/JusticePlutus/actions/runs/23080051185`
 
 从该 run 日志中已确认：
 
 - `已配置 1 个通知渠道：Telegram`
 - `已启用单股推送模式：每分析完一只股票立即推送`
+- `已配置 Bocha 搜索，共 1 个 API Key`
+- `已配置 Tavily 搜索，共 1 个 API Key`
+- `已配置 SerpAPI 搜索，共 1 个 API Key`
 - `Telegram 消息发送成功`
 - `[600519] 单股推送成功`
+- `单股推送模式：批次总览推送成功`
 
 ## 10. 演示时可以怎么讲
 
@@ -473,6 +527,10 @@ Jarvis Daily Investment Advice
 ### 10.2 1 分钟版本
 
 “这个系统是分层设计的。最上层是输入层，用 `STOCK_LIST` 或 GitHub Actions 输入传入股票代码；第二层是行情层，用 Tushare、Efinance、Tencent 等 provider 形成技术面上下文；第三层是搜索层，用 Tavily 之类的搜索 API 补齐新闻和舆情；第四层是 LLM 层，现在通过 AIHubMix 的 OpenAI-compatible API 跑 Gemini 模型；最后是通知层，通过 Telegram Bot 自动把分析结果发到群。”
+
+你现在可以把这段更新成：
+
+“这个系统是分层设计的。最上层是输入层，用 `STOCK_LIST` 或 GitHub Actions 输入传入股票代码；第二层是行情层，用 Tushare、Efinance、Tencent 等 provider 形成技术面上下文，而且日线和实时行情都带回退；第三层是搜索层，用 Bocha、Tavily、SerpAPI 分担不同维度的情报搜索，单个维度失败不会阻断整条分析；第四层是 LLM 层，现在通过 AIHubMix 的 OpenAI-compatible API 跑 Gemini 模型；最后是通知层，通过 Telegram Bot 先发单股详情，再补发一条批次总览。”
 
 ### 10.3 演示 checklist
 
@@ -489,7 +547,7 @@ Jarvis Daily Investment Advice
 如果首版闭环已经稳定，第二阶段建议按这个顺序扩展：
 
 1. 把 `STOCK_LIST` 从单股扩成多股
-2. 增加第二搜索源作为回退
+2. 把搜索层从“按维度轮询”进一步升级成“同一维度内串行回退”
 3. 增加第二通知渠道
 4. 再决定是否做群内命令触发机器人
 
