@@ -13,7 +13,7 @@
 - 每只股票分析完成后，立刻保存 `stocks/<code>.md` 和 `stocks/<code>.json`
 - 每只股票分析完成后，立刻推送到已配置通知渠道
 - 运行结束后额外生成 `summary.md`、`summary.json`、`run_meta.json`
-- 支持本地命令行和 GitHub Actions `workflow_dispatch`
+- 支持本地命令行、GitHub Actions `workflow_dispatch`，以及工作日自动定时触发
 
 ## 本地运行
 
@@ -28,11 +28,12 @@ python -m daily_stock_pipeline run --no-notify
 
 ## GitHub Actions
 
-仓库内置 `.github/workflows/daily_analysis.yml`，发布到 GitHub 后可以直接在 Actions 页面手动触发。
+仓库内置 `.github/workflows/daily_analysis.yml`，发布到 GitHub 后可以直接在 Actions 页面手动触发，也会在工作日自动运行。
 
 - 默认读取仓库的 `STOCK_LIST`
 - 也可以在触发时传入 `stocks` 临时覆盖
 - 执行结束后会上传 `reports/` 和 `logs/` artifact
+- 当前默认定时：工作日北京时间 `09:35` 自动执行一次
 
 ## 修改股票与触发方式
 
@@ -56,16 +57,19 @@ python -m daily_stock_pipeline run --no-notify
 
 ### 定时触发
 
-当前默认只启用 `workflow_dispatch`。
+当前默认同时启用：
 
-如果要改成 GitHub Actions 定时运行，可以在 workflow 的 `on:` 下增加：
+- `workflow_dispatch`
+- `schedule`：工作日北京时间 `09:35` 自动执行
+
+GitHub Actions 的 `schedule` 使用 UTC。当前配置等价于：
 
 ```yaml
 schedule:
-  - cron: "0 10 * * 1-5"
+  - cron: "35 1 * * 1-5"
 ```
 
-这个例子表示工作日北京时间 18:00 执行。
+即工作日 `01:35 UTC`，对应北京时间 `09:35`。
 
 如果要在本地机器定时运行，可以使用 Windows 任务计划程序定时执行：
 

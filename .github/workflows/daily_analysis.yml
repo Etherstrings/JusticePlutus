@@ -1,6 +1,9 @@
 name: 自选股即时推送
 
 on:
+  schedule:
+    # 01:35 UTC = 09:35 Asia/Shanghai, weekdays only.
+    - cron: "35 1 * * 1-5"
   workflow_dispatch:
     inputs:
       stocks:
