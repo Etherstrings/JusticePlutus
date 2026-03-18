@@ -1,6 +1,6 @@
 """Compatibility runner for local script execution."""
 
-from daily_stock_pipeline.cli import main
+from justice_plutus.cli import main
 
 
 if __name__ == "__main__":

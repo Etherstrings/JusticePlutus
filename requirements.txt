@@ -19,6 +19,7 @@ PyYAML>=6.0
 tavily-python>=0.3.0
 google-search-results>=2.4.0
 requests>=2.31.0
+pywencai>=0.13.0
 markdown2>=2.4.0
 imgkit>=1.2.0
 fake-useragent>=1.4.0

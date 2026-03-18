@@ -1,4 +1,4 @@
-"""CLI entrypoint for the extracted instant-push stock pipeline."""
+"""CLI entrypoint for JusticePlutus instant stock analysis."""
 
 from __future__ import annotations
 
@@ -59,7 +59,7 @@ def run_command(args) -> int:
     config.backtest_enabled = False
     config.report_output_dir = str(output_dir)
 
-    setup_logging(log_prefix="stock_pipeline", debug=False, log_dir=config.log_dir)
+    setup_logging(log_prefix="justice_plutus", debug=False, log_dir=config.log_dir)
 
     pipeline = StockAnalysisPipeline(
         config=config,

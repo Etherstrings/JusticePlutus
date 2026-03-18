@@ -1,4 +1,4 @@
-"""Module entrypoint for `python -m daily_stock_pipeline`."""
+"""Module entrypoint for `python -m justice_plutus`."""
 
 from .cli import main
 

@@ -22,7 +22,13 @@ from json_repair import repair_json
 from litellm import Router
 
 from src.agent.llm_adapter import get_thinking_extra_body
-from src.config import Config, get_config, get_api_keys_for_model, extra_litellm_params
+from src.config import (
+    Config,
+    get_config,
+    get_api_keys_for_model,
+    extra_litellm_params,
+    openai_params_for_key,
+)
 from src.storage import persist_llm_usage
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.schemas.report_schema import AnalysisReportSchema
@@ -667,30 +673,12 @@ class GeminiAnalyzer:
             )
             return
 
-        # --- Legacy path: build Router for multi-key, or use single key ---
+        # --- Legacy path: direct litellm calls with ordered key failover ---
         keys = get_api_keys_for_model(litellm_model, config)
 
         if len(keys) > 1:
-            # Build legacy Router for primary model multi-key load-balancing
-            extra_params = extra_litellm_params(litellm_model, config)
-            legacy_model_list = [
-                {
-                    "model_name": litellm_model,
-                    "litellm_params": {
-                        "model": litellm_model,
-                        "api_key": k,
-                        **extra_params,
-                    },
-                }
-                for k in keys
-            ]
-            self._router = Router(
-                model_list=legacy_model_list,
-                routing_strategy="simple-shuffle",
-                num_retries=2,
-            )
             logger.info(
-                f"Analyzer LLM: Legacy Router initialized with {len(keys)} keys "
+                f"Analyzer LLM: ordered key failover enabled with {len(keys)} keys "
                 f"for {litellm_model}"
             )
         elif keys:
@@ -710,8 +698,7 @@ class GeminiAnalyzer:
 
         When channels/YAML are configured, every model goes through the Router
         (which handles per-model key selection, load balancing, and retries).
-        In legacy mode, the primary model may use the Router while fallback
-        models fall back to direct litellm.completion().
+        In legacy mode, models are called directly with ordered key failover.
 
         Args:
             prompt: User prompt text.
@@ -754,16 +741,39 @@ class GeminiAnalyzer:
                 if use_channel_router and self._router:
                     # Channel / YAML path: Router manages key + base_url per model
                     response = self._router.completion(**call_kwargs)
-                elif self._router and model == config.litellm_model:
-                    # Legacy path: Router only for primary model multi-key
-                    response = self._router.completion(**call_kwargs)
                 else:
-                    # Legacy path: direct call for fallback models
+                    # Legacy path: direct call with ordered key failover
                     keys = get_api_keys_for_model(model, config)
+                    is_openai_compatible = model.startswith("openai/") or "/" not in model
                     if keys:
-                        call_kwargs["api_key"] = keys[0]
-                    call_kwargs.update(extra_litellm_params(model, config))
-                    response = litellm.completion(**call_kwargs)
+                        response = None
+                        key_last_error: Optional[Exception] = None
+                        for idx, key in enumerate(keys, start=1):
+                            keyed_kwargs = dict(call_kwargs)
+                            keyed_kwargs["api_key"] = key
+                            if is_openai_compatible:
+                                keyed_kwargs.update(openai_params_for_key(key, config))
+                            else:
+                                keyed_kwargs.update(extra_litellm_params(model, config))
+                            try:
+                                response = litellm.completion(**keyed_kwargs)
+                                break
+                            except Exception as key_error:
+                                key_last_error = key_error
+                                logger.warning(
+                                    "[LiteLLM] %s key failover %d/%d failed: %s",
+                                    model,
+                                    idx,
+                                    len(keys),
+                                    key_error,
+                                )
+                        if response is None:
+                            raise key_last_error or Exception(
+                                f"All API keys failed for model {model}"
+                            )
+                    else:
+                        call_kwargs.update(extra_litellm_params(model, config))
+                        response = litellm.completion(**call_kwargs)
 
                 if response and response.choices and response.choices[0].message.content:
                     usage: Dict[str, Any] = {}

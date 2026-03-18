@@ -1,98 +1,139 @@
 # JusticePlutus
 
-用于自选股分析与单股即时推送的独立项目。
+## 1. README 简介
 
-## 文档
+`JusticePlutus` 是一个面向 A 股自选股的“分析 + 报告 + 推送”流水线项目。  
+它聚焦一个稳定主路径：给定股票列表，自动拉取数据、生成单股结论，并按当前配置推送。
 
-- [快速开始与分层架构](docs/QUICKSTART_ARCHITECTURE.md)
-- [API 集成与 OpenClaw 交接说明](docs/API_INTEGRATION_GUIDE.md)
+当前主路径特征：
 
-## 特性
+- 单一运行模式（不拆多套推送模式）
+- 支持本地触发和 GitHub Actions 触发
+- LLM 主链路：`AIHubMix(OpenAI-compatible) -> Gemini`，失败后模型/Key 降级
+- 筹码链路：`HSCloud -> Wencai -> Akshare -> Tushare -> Efinance`（可按配置自动跳过未启用源）
 
-- 触发即执行，不做大盘复盘、不做交易日跳过判断
-- 每只股票分析完成后，立刻保存 `stocks/<code>.md` 和 `stocks/<code>.json`
-- 每只股票分析完成后，立刻推送到已配置通知渠道
-- 运行结束后额外生成 `summary.md`、`summary.json`、`run_meta.json`
-- 支持本地命令行、GitHub Actions `workflow_dispatch`，以及工作日自动定时触发
+相关文档：
 
-## 回退与降级
+- [功能架构说明](docs/FUNCTION_ARCHITECTURE.md)
+- [快速开始与分层架构（历史）](docs/QUICKSTART_ARCHITECTURE.md)
+- [API 集成说明](docs/API_INTEGRATION_GUIDE.md)
 
-- 日线数据会按 `Tushare -> Efinance -> Akshare -> Pytdx -> Baostock -> YFinance` 串行回退
-- 实时行情按 `REALTIME_SOURCE_PRIORITY` 逐源尝试；拿到第一份可用报价后，还会从后续源补齐量比、换手率、PE/PB 等字段
-- 搜索增强当前已接入 `Bocha`、`Tavily`、`SerpAPI`；单个搜索维度失败不会阻断整只股票分析
-- LLM 层代码支持主模型加 fallback models，但当前线上主路由是 `AIHubMix -> gemini-flash-lite-latest`
-- Telegram 发送带重试和纯文本回退；多股模式下会先发单股详情，最后补发 1 条批次总览
+---
 
-## 本地运行
+## 2. 功能架构介绍
+
+端到端流程（简版）：
+
+1. 读取股票输入（`workflow_dispatch.stocks` / `--stocks` / `STOCK_LIST`）
+2. 拉取行情与技术指标（带数据源回退）
+3. 拉取搜索与资讯增强（Bocha/Tavily/SerpAPI）
+4. 调用 LLM 生成结构化结论（主模型+fallback）
+5. 输出单股报告 + 批次汇总
+6. 发送通知（当前主用 Telegram）
+
+关键降级链：
+
+- 日线：`Tushare -> Efinance -> Akshare -> Pytdx -> Baostock -> YFinance`
+- 实时：按 `REALTIME_SOURCE_PRIORITY` 顺序，首个可用报价后继续补字段
+- 筹码：`HSCloud -> Wencai -> Akshare -> Tushare -> Efinance`
+- LLM Key：`AIHUBMIX_KEY` 优先，失败后 `OPENAI_API_KEY`
+- LLM 模型：`LITELLM_MODEL` 失败后 `LITELLM_FALLBACK_MODELS`
+
+更详细分层、时序图和模块职责见：
+
+- [docs/FUNCTION_ARCHITECTURE.md](docs/FUNCTION_ARCHITECTURE.md)
+
+---
+
+## 3. 快速开始配置
+
+### 3.1 本地运行
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-python -m daily_stock_pipeline run
-python -m daily_stock_pipeline run --stocks 600519,000001
-python -m daily_stock_pipeline run --no-notify
+cp .env.example .env
 ```
 
-默认输出目录是 `reports/YYYY-MM-DD/`，也可以通过 `--output-dir` 指定。
+最小可运行配置（`.env`）：
 
-## GitHub Actions
+```env
+STOCK_LIST=000001,600519
 
-仓库内置 `.github/workflows/daily_analysis.yml`，发布到 GitHub 后可以直接在 Actions 页面手动触发，也会在工作日自动运行。
+AIHUBMIX_KEY=your_aihubmix_key
+OPENAI_BASE_URL=https://aihubmix.com/v1
+OPENAI_MODEL=gemini-flash-lite-latest
+LITELLM_MODEL=openai/gemini-flash-lite-latest
+LITELLM_FALLBACK_MODELS=openai/gpt-4o-mini
 
-- 默认读取仓库的 `STOCK_LIST`
-- 也可以在触发时传入 `stocks` 临时覆盖
-- 执行结束后会上传 `reports/` 和 `logs/` artifact
-- 当前默认定时：工作日北京时间 `09:35` 自动执行一次
-
-## 修改股票与触发方式
-
-### 修改默认股票
-
-修改 GitHub 仓库 Variables 中的 `STOCK_LIST`。
-
-示例：
-
-```text
-600519,000001,300750
+ENABLE_CHIP_DISTRIBUTION=true
+WENCAI_COOKIE=your_wencai_cookie
+# 可选：HSCloud 优先源（二选一）
+# HSCLOUD_AUTH_TOKEN=...
+# HSCLOUD_COOKIE=...
+# 或 app_key + app_secret 自动换 token：
+# HSCLOUD_APP_KEY=...
+# HSCLOUD_APP_SECRET=...
 ```
 
-### 临时覆盖本次运行股票
+### 3.2 GitHub Actions 配置
 
-在 `Run workflow` 面板里填写 `stocks`，会临时覆盖默认 `STOCK_LIST`，不会改仓库变量。
+工作流文件：
 
-### 手动触发
+- `.github/workflows/justice_plutus_analysis.yml`
 
-进入 `.github/workflows/daily_analysis.yml` 对应的 Actions 页面，点击 `Run workflow`。
+必配（建议）：
 
-### 定时触发
+- `vars.STOCK_LIST`
+- `secrets.AIHUBMIX_KEY`（至少和 `OPENAI_API_KEY` 配一个）
+- `secrets.OPENAI_API_KEY`（建议与 AIHubMix 同时配）
+- `vars.OPENAI_BASE_URL`（AIHubMix 用 `https://aihubmix.com/v1`）
+- `vars.OPENAI_MODEL`（建议 `gemini-flash-lite-latest`）
+- `vars.ENABLE_CHIP_DISTRIBUTION`（`true/false`）
+- `secrets.WENCAI_COOKIE`、`secrets.HSCLOUD_*`（启用筹码增强时）
+- 通知相关 Token（如 Telegram）
 
-当前默认同时启用：
+股票覆盖优先级（高 -> 低）：
 
-- `workflow_dispatch`
-- `schedule`：工作日北京时间 `09:35` 自动执行
+1. `workflow_dispatch` 的 `stocks`
+2. CLI `--stocks`
+3. `.env` 的 `STOCK_LIST`
+4. 环境变量 `STOCK_LIST`
+5. 默认兜底
 
-GitHub Actions 的 `schedule` 使用 UTC。当前配置等价于：
+---
 
-```yaml
-schedule:
-  - cron: "35 1 * * 1-5"
+## 4. 测试本地触发与远程触发（上 GH）
+
+### 4.1 本地触发
+
+```bash
+# 仅验证链路，不推送通知
+python -m justice_plutus run --stocks 000001,600519 --no-notify
 ```
 
-即工作日 `01:35 UTC`，对应北京时间 `09:35`。
+检查点：
 
-如果要在本地机器定时运行，可以使用 Windows 任务计划程序定时执行：
+- 控制台无致命报错
+- 生成 `reports/YYYY-MM-DD/stocks/*.md|*.json`
+- 生成 `summary.md` / `summary.json` / `run_meta.json`
 
-```powershell
-python -m daily_stock_pipeline run
+### 4.2 远程触发（GitHub）
+
+```bash
+# 手动触发 workflow_dispatch
+gh workflow run justice_plutus_analysis.yml -f stocks='000001,600519'
+
+# 查看最近运行
+gh run list --workflow justice_plutus_analysis.yml --limit 5
+
+# 追踪日志（替换 <run-id>）
+gh run watch <run-id> --exit-status
 ```
 
-## 目录结构
+检查点：
 
-```text
-reports/YYYY-MM-DD/
-  summary.md
-  summary.json
-  run_meta.json
-  stocks/
-    600519.md
-    600519.json
-```
+- Run 状态为 `completed` 且 `conclusion=success`
+- Artifacts 含 `reports/`、`logs/`
+- 报告字段包含单股模板关键块（重要信息、核心结论、当日行情、数据透视、作战计划、检查清单）

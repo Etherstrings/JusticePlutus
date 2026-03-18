@@ -97,6 +97,16 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    # HS 云筹码接口（service 182）
+    hscloud_base_url: Optional[str] = None
+    hscloud_auth_token: Optional[str] = None
+    hscloud_cookie: Optional[str] = None
+    hscloud_timeout_seconds: float = 8.0
+    hscloud_app_key: Optional[str] = None
+    hscloud_app_secret: Optional[str] = None
+    # 问财筹码（pywencai）
+    wencai_cookie: Optional[str] = None
+    wencai_user_agent: Optional[str] = None
     
     # === AI 分析配置 ===
     # LiteLLM unified model config (provider/model format, e.g. gemini/gemini-2.5-flash)
@@ -459,15 +469,19 @@ class Config:
         if not anthropic_api_keys and _single_anthropic:
             anthropic_api_keys = [_single_anthropic]
 
-        # OPENAI_API_KEYS > AIHUBMIX_KEY > OPENAI_API_KEY
+        # OPENAI_API_KEYS (explicit list) > [AIHUBMIX_KEY, OPENAI_API_KEY]
+        # Keep both keys in deterministic order to support key-level failover.
         _openai_keys_raw = os.getenv('OPENAI_API_KEYS', '')
         openai_api_keys = [k.strip() for k in _openai_keys_raw.split(',') if k.strip()]
-        if not openai_api_keys:
+        if openai_api_keys:
+            openai_api_keys = list(dict.fromkeys(openai_api_keys))
+        else:
             _aihubmix = os.getenv('AIHUBMIX_KEY', '').strip()
             _single_openai = os.getenv('OPENAI_API_KEY', '').strip()
-            _fallback_key = _aihubmix or _single_openai
-            if _fallback_key:
-                openai_api_keys = [_fallback_key]
+            openai_api_keys = []
+            for _candidate in (_aihubmix, _single_openai):
+                if _candidate and _candidate not in openai_api_keys:
+                    openai_api_keys.append(_candidate)
 
         # DEEPSEEK_API_KEYS > DEEPSEEK_API_KEY (independent from OpenAI-compatible layer)
         _deepseek_keys_raw = os.getenv('DEEPSEEK_API_KEYS', '')
@@ -482,7 +496,7 @@ class Config:
         if not litellm_model:
             _gemini_model_name = os.getenv('GEMINI_MODEL', 'gemini-3-flash-preview').strip()
             _anthropic_model_name = os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022').strip()
-            _openai_model_name = os.getenv('OPENAI_MODEL', 'gpt-4o-mini').strip()
+            _openai_model_name = (os.getenv('OPENAI_MODEL', 'gpt-4o-mini') or '').strip() or 'gpt-4o-mini'
             if gemini_api_keys:
                 litellm_model = f'gemini/{_gemini_model_name}'
             elif anthropic_api_keys:
@@ -608,6 +622,14 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            hscloud_base_url=os.getenv('HSCLOUD_BASE_URL', 'https://sandbox.hscloud.cn'),
+            hscloud_auth_token=os.getenv('HSCLOUD_AUTH_TOKEN'),
+            hscloud_cookie=os.getenv('HSCLOUD_COOKIE'),
+            hscloud_timeout_seconds=float(os.getenv('HSCLOUD_TIMEOUT_SECONDS', '8')),
+            hscloud_app_key=os.getenv('HSCLOUD_APP_KEY'),
+            hscloud_app_secret=os.getenv('HSCLOUD_APP_SECRET'),
+            wencai_cookie=os.getenv('WENCAI_COOKIE'),
+            wencai_user_agent=os.getenv('WENCAI_USER_AGENT'),
             litellm_model=litellm_model,
             litellm_fallback_models=litellm_fallback_models,
             litellm_config_path=litellm_config_path,
@@ -629,13 +651,14 @@ class Config:
             anthropic_model=os.getenv('ANTHROPIC_MODEL', 'claude-3-5-sonnet-20241022'),
             anthropic_temperature=float(os.getenv('ANTHROPIC_TEMPERATURE', '0.7')),
             anthropic_max_tokens=int(os.getenv('ANTHROPIC_MAX_TOKENS', '8192')),
-            # AIHubmix is the preferred OpenAI-compatible provider (one key, all models, no VPN required).
-            # Within the OpenAI-compatible layer: AIHUBMIX_KEY takes priority over OPENAI_API_KEY.
-            # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible (incl. AIHubmix).
-            # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no explicit
-            # OPENAI_BASE_URL override is provided.
+            # OpenAI-compatible key order:
+            # 1) OPENAI_API_KEYS (explicit comma-separated list)
+            # 2) AIHUBMIX_KEY then OPENAI_API_KEY (deterministic fallback order)
+            # Overall provider fallback order: Gemini > Anthropic > OpenAI-compatible.
+            # base_url is auto-set to aihubmix.com/v1 when AIHUBMIX_KEY is used and no
+            # explicit OPENAI_BASE_URL override is provided.
             # Model names match upstream (e.g. gemini-3.1-pro-preview, gpt-4o, gpt-4o-free, deepseek-chat).
-            openai_api_key=os.getenv('AIHUBMIX_KEY') or os.getenv('OPENAI_API_KEY') or None,
+            openai_api_key=openai_api_keys[0] if openai_api_keys else None,
             openai_base_url=os.getenv('OPENAI_BASE_URL') or (
                 'https://aihubmix.com/v1' if os.getenv('AIHUBMIX_KEY') else None
             ),  # noqa: E501
@@ -1321,6 +1344,48 @@ def extra_litellm_params(model: str, config: Config) -> Dict[str, Any]:
         if config.openai_base_url:
             params["api_base"] = config.openai_base_url
         if config.openai_base_url and "aihubmix.com" in config.openai_base_url:
+            params["extra_headers"] = {"APP-Code": "GPIJ3886"}
+    return params
+
+
+def openai_params_for_key(api_key: str, config: Config) -> Dict[str, Any]:
+    """Resolve api_base/headers for an OpenAI-compatible key attempt.
+
+    Key-level behavior:
+    - AIHUBMIX_KEY uses AIHubMix endpoint/header.
+    - In dual-key mode (AIHUBMIX_KEY + OPENAI_API_KEY), OPENAI_API_KEY falls
+      back to the official OpenAI endpoint when OPENAI_BASE_URL is unset or
+      points to aihubmix.com.
+    - Otherwise OPENAI_BASE_URL (if set) is respected.
+    """
+    key = (api_key or "").strip()
+    if not key:
+        return {}
+
+    params: Dict[str, Any] = {}
+    explicit_base = (os.getenv("OPENAI_BASE_URL") or "").strip()
+    aihubmix_key = (os.getenv("AIHUBMIX_KEY") or "").strip()
+    openai_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    has_dual_keys = bool(aihubmix_key and openai_key and aihubmix_key != openai_key)
+
+    if key == aihubmix_key:
+        api_base = explicit_base or "https://aihubmix.com/v1"
+        params["api_base"] = api_base
+        if "aihubmix.com" in api_base:
+            params["extra_headers"] = {"APP-Code": "GPIJ3886"}
+        return params
+
+    # In dual-key mode, OPENAI_API_KEY should be able to escape AIHubMix and
+    # hit the official endpoint when OPENAI_BASE_URL is missing/AIHubMix.
+    if has_dual_keys and key == openai_key and (
+        not explicit_base or "aihubmix.com" in explicit_base
+    ):
+        return params
+
+    api_base = explicit_base or config.openai_base_url
+    if api_base:
+        params["api_base"] = api_base
+        if "aihubmix.com" in api_base:
             params["extra_headers"] = {"APP-Code": "GPIJ3886"}
     return params
 

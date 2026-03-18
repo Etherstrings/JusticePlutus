@@ -151,13 +151,13 @@ metadata:
 推荐给 OpenClaw 的调用入口：
 
 ```powershell
-python -m daily_stock_pipeline run --stocks 600519
+python -m justice_plutus run --stocks 600519
 ```
 
 如果需要只生成结果不推送：
 
 ```powershell
-python -m daily_stock_pipeline run --stocks 600519 --no-notify
+python -m justice_plutus run --stocks 600519 --no-notify
 ```
 
 ## 5. 项目公开前的安全要求
@@ -194,6 +194,8 @@ python -m daily_stock_pipeline run --stocks 600519 --no-notify
   - 当前默认是 `tencent,akshare_sina,efinance,akshare_em`
   - 如配置了 `TUSHARE_TOKEN` 且未显式覆盖，会自动把 `tushare` 注入到最前面
 - 实时行情在拿到第一份可用报价后，还会继续尝试从后续源补齐 `量比`、`换手率`、`PE/PB`、市值等字段
+- `get_chip_distribution()` 当前按 `HSCloud -> Wencai -> Akshare -> Tushare -> Efinance` 顺序降级
+  - `HSCLOUD_AUTH_TOKEN/HSCLOUD_COOKIE`、`WENCAI_COOKIE` 未配置时自动跳过对应源
 - 实时行情和筹码接口都带熔断器：
   - 连续失败后进入冷却期
   - 冷却结束后半开探测

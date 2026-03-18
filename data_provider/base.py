@@ -453,6 +453,10 @@ class DataFetcherManager:
           2. TushareFetcher (Priority 2)
           3. BaostockFetcher (Priority 3)
           4. YfinanceFetcher (Priority 4)
+
+        说明：
+        - HSCloudFetcher / WencaiFetcher 仅用于筹码分布降级链，
+          不参与日线/实时行情主路径。
         """
         from .efinance_fetcher import EfinanceFetcher
         from .akshare_fetcher import AkshareFetcher
@@ -460,6 +464,8 @@ class DataFetcherManager:
         from .pytdx_fetcher import PytdxFetcher
         from .baostock_fetcher import BaostockFetcher
         from .yfinance_fetcher import YfinanceFetcher
+        from .hscloud_fetcher import HSCloudFetcher
+        from .wencai_fetcher import WencaiFetcher
         # 创建所有数据源实例（优先级在各 Fetcher 的 __init__ 中确定）
         efinance = EfinanceFetcher()
         akshare = AkshareFetcher()
@@ -467,6 +473,8 @@ class DataFetcherManager:
         pytdx = PytdxFetcher()      # 通达信数据源（可配 PYTDX_HOST/PYTDX_PORT）
         baostock = BaostockFetcher()
         yfinance = YfinanceFetcher()
+        hscloud = HSCloudFetcher()
+        wencai = WencaiFetcher()
 
         # 初始化数据源列表
         self._fetchers = [
@@ -476,6 +484,8 @@ class DataFetcherManager:
             pytdx,
             baostock,
             yfinance,
+            hscloud,
+            wencai,
         ]
 
         # 按优先级排序（Tushare 如果配置了 Token 且初始化成功，优先级为 0）
@@ -888,7 +898,7 @@ class DataFetcherManager:
         策略：
         1. 检查配置开关
         2. 检查熔断器状态
-        3. 依次尝试多个数据源：AkshareFetcher -> TushareFetcher -> EfinanceFetcher
+        3. 依次尝试多个数据源：HSCloudFetcher -> WencaiFetcher -> AkshareFetcher -> TushareFetcher -> EfinanceFetcher
         4. 所有数据源失败则返回 None（降级兜底）
 
         Args:
@@ -914,6 +924,8 @@ class DataFetcherManager:
 
         # 定义筹码数据源优先级列表
         chip_sources = [
+            ("HSCloudFetcher", "hscloud_chip"),
+            ("WencaiFetcher", "wencai_chip"),
             ("AkshareFetcher", "akshare_chip"),
             ("TushareFetcher", "tushare_chip"),
             ("EfinanceFetcher", "efinance_chip"),

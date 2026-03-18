@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from daily_stock_pipeline.runtime import (
+from justice_plutus.runtime import (
     build_run_meta,
     ensure_summary_markdown,
     normalize_stock_codes,

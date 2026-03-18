@@ -1,4 +1,4 @@
-"""Lightweight runtime helpers for the extracted stock pipeline."""
+"""Lightweight runtime helpers for JusticePlutus."""
 
 from __future__ import annotations
 

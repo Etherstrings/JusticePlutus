@@ -1,0 +1,75 @@
+name: 自选股即时推送
+
+on:
+  schedule:
+    # 01:35 UTC = 09:35 Asia/Shanghai, weekdays only.
+    - cron: "35 1 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      stocks:
+        description: "临时覆盖 STOCK_LIST，逗号分隔"
+        required: false
+        type: string
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 创建运行目录
+        run: |
+          mkdir -p reports logs data
+
+      - name: 执行自选股分析
+        env:
+          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600989,600780,600522,603618,600722,601898,600900,002092,600598,002173,002378,601958,600759' }}
+          TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
+          AIHUBMIX_KEY: ${{ secrets.AIHUBMIX_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || secrets.OPENAI_MODEL || 'gemini-flash-lite-latest' }}
+          # Primary model + fallback chain:
+          # 1) openai/gemini-flash-lite-latest (AIHubMix first key)
+          # 2) openai/gpt-4o-mini (fallback model and/or fallback key)
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL || 'openai/gemini-flash-lite-latest' }}
+          LITELLM_FALLBACK_MODELS: ${{ vars.LITELLM_FALLBACK_MODELS || secrets.LITELLM_FALLBACK_MODELS || 'openai/gpt-4o-mini' }}
+          BOCHA_API_KEYS: ${{ secrets.BOCHA_API_KEYS }}
+          TAVILY_API_KEYS: ${{ secrets.TAVILY_API_KEYS }}
+          SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
+          MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
+          ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
+        run: |
+          STOCKS_INPUT="${{ github.event.inputs.stocks }}"
+          if [ -n "$STOCKS_INPUT" ]; then
+            python -m justice_plutus run --stocks "$STOCKS_INPUT"
+          else
+            python -m justice_plutus run
+          fi
+
+      - name: 上传运行产物
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: justice-plutus-${{ github.run_number }}
+          path: |
+            reports/
+            logs/
+          retention-days: 30

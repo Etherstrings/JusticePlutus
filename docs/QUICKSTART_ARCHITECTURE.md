@@ -57,7 +57,7 @@
 
 打开：
 
-- `https://github.com/Etherstrings/JusticePlutus/actions/workflows/daily_analysis.yml`
+- `https://github.com/Etherstrings/JusticePlutus/actions/workflows/justice_plutus_analysis.yml`
 
 然后点击：
 
@@ -77,7 +77,7 @@ schedule:
 如果要在本地定时运行，则使用 Windows Task Scheduler 定时执行：
 
 ```powershell
-python -m daily_stock_pipeline run
+python -m justice_plutus run
 ```
 
 ## 2. 5 分钟快速开始
@@ -123,7 +123,7 @@ Variables 页面：
 
 GitHub Actions 页面：
 
-- `https://github.com/Etherstrings/JusticePlutus/actions/workflows/daily_analysis.yml`
+- `https://github.com/Etherstrings/JusticePlutus/actions/workflows/justice_plutus_analysis.yml`
 
 手动点击：
 
@@ -136,7 +136,7 @@ GitHub Actions 页面：
 ```mermaid
 flowchart TD
     A[User / Presenter] --> B[GitHub Actions workflow_dispatch]
-    B --> C[python -m daily_stock_pipeline run]
+    B --> C[python -m justice_plutus run]
     C --> D[StockAnalysisPipeline]
 
     D --> E[Input Layer]
@@ -184,7 +184,7 @@ flowchart TD
 sequenceDiagram
     participant U as User
     participant GH as GitHub Actions
-    participant CLI as daily_stock_pipeline CLI
+    participant CLI as justice_plutus CLI
     participant PIPE as StockAnalysisPipeline
     participant DATA as Data Providers
     participant SEARCH as Search Providers
@@ -193,7 +193,7 @@ sequenceDiagram
     participant GROUP as Telegram Group
 
     U->>GH: workflow_dispatch
-    GH->>CLI: python -m daily_stock_pipeline run
+    GH->>CLI: python -m justice_plutus run
     CLI->>PIPE: run(stock_codes)
 
     PIPE->>DATA: get_daily_data(600519)
@@ -226,7 +226,7 @@ sequenceDiagram
 | 输入层 | `STOCK_LIST` 或 `--stocks` | `--stocks` 可临时覆盖 `STOCK_LIST` | 已启用 |
 | 日线数据层 | `Tushare -> Efinance -> Akshare -> Pytdx -> Baostock -> YFinance` | 前一源失败自动切下一个；全部失败时仍尝试用已有数据库或最小上下文继续分析 | 已验证 `Tushare` 权限不足时回退到 `Efinance` |
 | 实时行情层 | 按 `REALTIME_SOURCE_PRIORITY` 顺序尝试 | 成功拿到基础报价后，可继续用后续源补字段；连续失败的源会进入熔断冷却 | 已启用 |
-| 筹码层 | `Akshare -> Tushare -> Efinance` | 任一源失败继续试下一个；全失败返回 `None`，不阻断主流程 | 当前默认关闭 |
+| 筹码层 | `HSCloud -> Wencai -> Akshare -> Tushare -> Efinance` | 任一源失败继续试下一个；未配置 key/cookie 的源自动跳过；全失败返回 `None`，不阻断主流程 | 按开关启用 |
 | 搜索层 | `Bocha / Tavily / SerpAPI` | 单个 provider 或单个维度失败不阻断整只股票分析；失败维度留空继续跑 | 已启用并验证 |
 | LLM 层 | `AIHubMix -> gemini-flash-lite-latest` | 代码支持 `LITELLM_FALLBACK_MODELS` 和多模型 Router；当前线上未配置第二模型 | 主路由已验证 |
 | 通知层 | Telegram Markdown 消息 | 发送失败自动重试；Markdown 解析失败回退纯文本；多股时最后追加 1 条总览 | 已验证 |
