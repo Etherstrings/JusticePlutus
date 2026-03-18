@@ -1356,7 +1356,8 @@ class NotificationService(
         """
         生成单只股票的分析报告（用于单股推送模式 #55）
         
-        格式精简但信息完整，适合每分析完一只股票立即推送
+        保持单股即时推送模式不变，同时补齐完整决策字段：
+        重要信息速览、核心结论、当日行情、数据透视、作战计划、检查清单。
         
         Args:
             result: 单只股票的分析结果
@@ -1368,7 +1369,9 @@ class NotificationService(
         signal_text, signal_emoji, _ = self._get_signal_level(result)
         dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
         core = dashboard.get('core_conclusion', {}) if dashboard else {}
+        battle = dashboard.get('battle_plan', {}) if dashboard else {}
         intel = dashboard.get('intelligence', {}) if dashboard else {}
+        data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
         
         # 股票名称（转义 *ST 等特殊字符）
         raw_name = result.name if result.name and not result.name.startswith('股票') else f'股票{result.code}'
@@ -1378,35 +1381,153 @@ class NotificationService(
             f"{signal_emoji} {stock_name} ({result.code})",
             "",
         ]
-        if result.analysis_summary and result.analysis_summary != core.get('one_sentence', ''):
-            lines.append(f"📌 核心结论: {core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary}")
-            lines.append("")
 
-        lines.append("📰 重要信息速览")
+        lines.extend([
+            "📰 重要信息速览",
+            "",
+        ])
         if intel:
-            if intel.get('earnings_outlook'):
-                lines.append(f"📊 业绩预期: {intel['earnings_outlook'][:120]}")
-            if intel.get('sentiment_summary'):
-                lines.append(f"💭 舆情情绪: {intel['sentiment_summary'][:120]}")
+            lines.append(f"💭 舆情情绪: {intel.get('sentiment_summary') or '未找到相关信息'}")
+            lines.append(f"📊 业绩预期: {intel.get('earnings_outlook') or '未找到相关信息'}")
             lines.append("")
+            lines.append("🚨 风险警报:")
             risks = intel.get('risk_alerts', [])
             if risks:
-                lines.append("🚨 风险警报:")
-                lines.append("")
-                for index, risk in enumerate(risks[:3], start=1):
-                    lines.append(f"风险点{index}：{risk}")
-            lines.append("")
+                for risk in risks[:5]:
+                    lines.append(f"- {risk}")
+            else:
+                lines.append("- 未找到相关风险警报")
+
             catalysts = intel.get('positive_catalysts', [])
             if catalysts:
-                lines.append("✨ 利好催化:")
                 lines.append("")
-                for index, cat in enumerate(catalysts[:3], start=1):
-                    lines.append(f"利好{index}：{cat}")
-            latest_news = intel.get('latest_news')
-            if latest_news:
-                lines.append(f"📢 最新动态: {latest_news}")
+                lines.append("✨ 利好催化:")
+                for cat in catalysts[:5]:
+                    lines.append(f"- {cat}")
+
+            lines.append("")
+            lines.append(f"📢 最新动态: {intel.get('latest_news') or '未找到相关信息'}")
         else:
-            lines.append("暂无搜索增强结果，当前主要基于技术面和行情数据。")
+            lines.extend([
+                "💭 舆情情绪: 未找到相关信息",
+                "📊 业绩预期: 未找到相关信息",
+                "",
+                "🚨 风险警报:",
+                "- 未找到相关风险警报",
+                "",
+                "📢 最新动态: 未找到相关信息",
+            ])
+
+        one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
+        time_sense = core.get('time_sensitivity', '本周内') if core else '本周内'
+        pos_advice = core.get('position_advice', {}) if core else {}
+
+        lines.extend([
+            "",
+            "📌 核心结论",
+            "",
+            f"{signal_emoji} {signal_text} | {result.trend_prediction}",
+            "",
+            f"> 一句话决策: {one_sentence or '待补充'}",
+            "",
+            f"⏰ 时效性: {time_sense}",
+            "",
+            "| 持仓情况 | 操作建议 |",
+            "|---------|---------|",
+            f"| 🆕 空仓者 | {pos_advice.get('no_position', result.operation_advice)} |",
+            f"| 💼 持仓者 | {pos_advice.get('has_position', '继续持有')} |",
+            "",
+        ])
+
+        self._append_market_snapshot(lines, result)
+
+        if data_persp:
+            trend_data = data_persp.get('trend_status', {})
+            price_data = data_persp.get('price_position', {})
+            vol_data = data_persp.get('volume_analysis', {})
+            chip_data = data_persp.get('chip_structure', {})
+
+            lines.extend([
+                "📊 数据透视",
+                "",
+            ])
+
+            if trend_data:
+                is_bullish = "✅ 是" if trend_data.get('is_bullish', False) else "❌ 否"
+                lines.extend([
+                    f"均线排列: {trend_data.get('ma_alignment', 'N/A')} | 多头排列: {is_bullish} | 趋势强度: {trend_data.get('trend_score', 'N/A')}/100",
+                    "",
+                ])
+
+            if price_data:
+                bias_status = price_data.get('bias_status', 'N/A')
+                bias_emoji = "✅" if bias_status == "安全" else ("⚠️" if bias_status == "警戒" else "🚨")
+                lines.extend([
+                    "| 价格指标 | 数值 |",
+                    "|---------|------|",
+                    f"| 当前价 | {price_data.get('current_price', 'N/A')} |",
+                    f"| MA5 | {price_data.get('ma5', 'N/A')} |",
+                    f"| MA10 | {price_data.get('ma10', 'N/A')} |",
+                    f"| MA20 | {price_data.get('ma20', 'N/A')} |",
+                    f"| 乖离率(MA5) | {price_data.get('bias_ma5', 'N/A')}% {bias_emoji}{bias_status} |",
+                    f"| 支撑位 | {price_data.get('support_level', 'N/A')} |",
+                    f"| 压力位 | {price_data.get('resistance_level', 'N/A')} |",
+                    "",
+                ])
+
+            if vol_data:
+                lines.extend([
+                    f"量能: 量比 {vol_data.get('volume_ratio', 'N/A')} ({vol_data.get('volume_status', '')}) | 换手率 {vol_data.get('turnover_rate', 'N/A')}%",
+                    f"💡 {vol_data.get('volume_meaning', '')}",
+                    "",
+                ])
+
+            if chip_data:
+                chip_health = chip_data.get('chip_health', 'N/A')
+                chip_emoji = "✅" if chip_health == "健康" else ("⚠️" if chip_health == "一般" else "🚨")
+                lines.extend([
+                    f"筹码: 获利比例 {chip_data.get('profit_ratio', 'N/A')} | 平均成本 {chip_data.get('avg_cost', 'N/A')} | 集中度 {chip_data.get('concentration', 'N/A')} {chip_emoji}{chip_health}",
+                    "",
+                ])
+
+        if battle:
+            lines.extend([
+                "🎯 作战计划",
+                "",
+            ])
+
+            sniper = battle.get('sniper_points', {})
+            if sniper:
+                lines.extend([
+                    "📍 狙击点位",
+                    "",
+                    "| 点位类型 | 价格 |",
+                    "|---------|------|",
+                    f"| 🎯 理想买入点 | {self._clean_sniper_value(sniper.get('ideal_buy', 'N/A'))} |",
+                    f"| 🔵 次优买入点 | {self._clean_sniper_value(sniper.get('secondary_buy', 'N/A'))} |",
+                    f"| 🛑 止损位 | {self._clean_sniper_value(sniper.get('stop_loss', 'N/A'))} |",
+                    f"| 🎊 目标位 | {self._clean_sniper_value(sniper.get('take_profit', 'N/A'))} |",
+                    "",
+                ])
+
+            position = battle.get('position_strategy', {})
+            if position:
+                lines.extend([
+                    f"💰 仓位建议: {position.get('suggested_position', 'N/A')}",
+                    f"- 建仓策略: {position.get('entry_plan', 'N/A')}",
+                    f"- 风控策略: {position.get('risk_control', 'N/A')}",
+                    "",
+                ])
+
+            checklist = battle.get('action_checklist', [])
+            if checklist:
+                lines.extend([
+                    "✅ 检查清单",
+                    "",
+                ])
+                for item in checklist:
+                    lines.append(f"- {item}")
+                lines.append("")
 
         lines.extend([
             "",
