@@ -16,7 +16,7 @@
 
 当前 `JusticePlutus` 已验证通过的最小闭环是：
 
-1. `GitHub Actions workflow_dispatch`
+1. 触发入口（本地 CLI / GitHub Actions）
 2. 输入 `STOCK_LIST` 或临时 `stocks`
 3. 行情层获取 A 股数据
 4. `Bocha + Tavily + SerpAPI` 搜索增强
