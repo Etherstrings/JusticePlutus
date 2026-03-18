@@ -37,7 +37,7 @@ jobs:
 
       - name: 执行自选股分析
         env:
-          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}
+          STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600989,600780,600522,603618,600722,601898,600900,002092,600598,002173,002378,601958,600759' }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
