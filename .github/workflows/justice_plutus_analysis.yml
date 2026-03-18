@@ -53,6 +53,14 @@ jobs:
           SERPAPI_API_KEYS: ${{ secrets.SERPAPI_API_KEYS }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          WENCAI_COOKIE: ${{ secrets.WENCAI_COOKIE }}
+          WENCAI_USER_AGENT: ${{ vars.WENCAI_USER_AGENT || secrets.WENCAI_USER_AGENT || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36' }}
+          HSCLOUD_BASE_URL: ${{ vars.HSCLOUD_BASE_URL || secrets.HSCLOUD_BASE_URL || 'https://sandbox.hscloud.cn' }}
+          HSCLOUD_AUTH_TOKEN: ${{ secrets.HSCLOUD_AUTH_TOKEN }}
+          HSCLOUD_COOKIE: ${{ secrets.HSCLOUD_COOKIE }}
+          HSCLOUD_APP_KEY: ${{ secrets.HSCLOUD_APP_KEY }}
+          HSCLOUD_APP_SECRET: ${{ secrets.HSCLOUD_APP_SECRET }}
+          HSCLOUD_TIMEOUT_SECONDS: ${{ vars.HSCLOUD_TIMEOUT_SECONDS || secrets.HSCLOUD_TIMEOUT_SECONDS || '8' }}
           REPORT_TYPE: ${{ vars.REPORT_TYPE || secrets.REPORT_TYPE || 'simple' }}
           MAX_WORKERS: ${{ vars.MAX_WORKERS || secrets.MAX_WORKERS || '1' }}
           ENABLE_CHIP_DISTRIBUTION: ${{ vars.ENABLE_CHIP_DISTRIBUTION || secrets.ENABLE_CHIP_DISTRIBUTION || 'false' }}
