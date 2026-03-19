@@ -1,7 +1,7 @@
 ---
 name: justice-plutus
 description: Local A-share stock analysis with Markdown and JSON reports.
-version: "2.0.0"
+version: "2.0.1"
 homepage: https://github.com/Etherstrings/JusticePlutus#donate
 metadata:
   openclaw:
