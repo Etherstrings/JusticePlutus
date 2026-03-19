@@ -13,11 +13,12 @@
 - 使用 `Bocha + Tavily + SerpAPI` 做搜索增强
 - 结果可推送到 `Telegram Bot`（其它通道可扩展）
 
-如果这个项目对你有帮助，可以在 GitHub 页面点击 `Sponsor`、访问 <https://clawhub.ai/Etherstrings/justice-plutus>，或前往 [README 捐赠入口](../README.md#donate) 扫码支持项目继续迭代。
+如果这个项目对你有帮助，可以在 GitHub 页面点击 `Sponsor`，或前往 [README 捐赠入口](../README.md#donate) 扫码支持项目继续迭代。
 
 配套文档：
 
 - [API 集成与 OpenClaw 交接说明](API_INTEGRATION_GUIDE.md)
+- [OpenClaw / ClawHub Skill 页面](https://clawhub.ai/Etherstrings/justice-plutus)
 
 ## 1. 项目定位
 

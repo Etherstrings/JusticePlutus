@@ -5,7 +5,6 @@
 如果这个项目对你有帮助，欢迎赞助支持继续迭代。
 
 - GitHub 页面右上角可直接点击 `Sponsor`
-- 在线捐赠入口：<https://clawhub.ai/Etherstrings/justice-plutus>
 - 如果你更习惯国内付款方式，可以直接扫码赞助
 
 <div>
@@ -32,6 +31,7 @@
 - [功能架构说明](docs/FUNCTION_ARCHITECTURE.md)
 - [快速开始与分层架构](docs/QUICKSTART_ARCHITECTURE.md)
 - [API 集成说明](docs/API_INTEGRATION_GUIDE.md)
+- [OpenClaw / ClawHub Skill 页面](https://clawhub.ai/Etherstrings/justice-plutus)
 
 ---
 
