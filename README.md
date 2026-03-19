@@ -5,6 +5,7 @@
 如果这个项目对你有帮助，欢迎赞助支持继续迭代。
 
 - GitHub 页面右上角可直接点击 `Sponsor`
+- 在线捐赠入口：<https://clawhub.ai/Etherstrings/justice-plutus>
 - 如果你更习惯国内付款方式，可以直接扫码赞助
 
 <div>
