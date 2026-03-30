@@ -9,6 +9,7 @@ __pycache__/
 data/
 logs/
 reports/
+.worktrees/
 
 !src/data/
 !src/data/__init__.py

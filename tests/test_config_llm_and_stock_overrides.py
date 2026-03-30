@@ -22,6 +22,9 @@ def _load_config(monkeypatch, **env):
         "DEEPSEEK_API_KEY",
         "DEEPSEEK_API_KEYS",
         "STOCK_LIST",
+        "IFIND_REFRESH_TOKEN",
+        "ENABLE_IFIND",
+        "ENABLE_IFIND_ANALYSIS_ENHANCEMENT",
     ]
     for key in tracked_keys:
         monkeypatch.delenv(key, raising=False)
@@ -136,3 +139,24 @@ def test_cli_uses_config_stock_list_without_stocks_arg():
     result = _resolve_stock_codes(args, cfg)
     assert cfg.refresh_called is True
     assert result == ["600519", "000001"]
+
+
+def test_ifind_flags_default_to_disabled(monkeypatch):
+    cfg = _load_config(monkeypatch)
+
+    assert cfg.ifind_refresh_token is None
+    assert cfg.enable_ifind is False
+    assert cfg.enable_ifind_analysis_enhancement is False
+
+
+def test_ifind_flags_and_refresh_token_are_loaded(monkeypatch):
+    cfg = _load_config(
+        monkeypatch,
+        IFIND_REFRESH_TOKEN="refresh-token-demo",
+        ENABLE_IFIND="true",
+        ENABLE_IFIND_ANALYSIS_ENHANCEMENT="true",
+    )
+
+    assert cfg.ifind_refresh_token == "refresh-token-demo"
+    assert cfg.enable_ifind is True
+    assert cfg.enable_ifind_analysis_enhancement is True

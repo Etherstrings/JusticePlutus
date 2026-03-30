@@ -97,6 +97,7 @@ class Config:
 
     # === 数据源 API Token ===
     tushare_token: Optional[str] = None
+    ifind_refresh_token: Optional[str] = None
     # HS 云筹码接口（service 182）
     hscloud_base_url: Optional[str] = None
     hscloud_auth_token: Optional[str] = None
@@ -298,6 +299,8 @@ class Config:
     trading_day_check_enabled: bool = True
 
     # === 实时行情增强数据配置 ===
+    enable_ifind: bool = False
+    enable_ifind_analysis_enhancement: bool = False
     # 实时行情开关（关闭后使用历史收盘价进行分析）
     enable_realtime_quote: bool = True
     # 盘中实时技术面：启用时用实时价计算 MA/多头排列（Issue #234）；关闭则用昨日收盘
@@ -622,6 +625,7 @@ class Config:
             feishu_app_secret=os.getenv('FEISHU_APP_SECRET'),
             feishu_folder_token=os.getenv('FEISHU_FOLDER_TOKEN'),
             tushare_token=os.getenv('TUSHARE_TOKEN'),
+            ifind_refresh_token=os.getenv('IFIND_REFRESH_TOKEN'),
             hscloud_base_url=os.getenv('HSCLOUD_BASE_URL', 'https://sandbox.hscloud.cn'),
             hscloud_auth_token=os.getenv('HSCLOUD_AUTH_TOKEN'),
             hscloud_cookie=os.getenv('HSCLOUD_COOKIE'),
@@ -752,6 +756,10 @@ class Config:
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
+            enable_ifind=os.getenv('ENABLE_IFIND', 'false').lower() == 'true',
+            enable_ifind_analysis_enhancement=(
+                os.getenv('ENABLE_IFIND_ANALYSIS_ENHANCEMENT', 'false').lower() == 'true'
+            ),
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),
