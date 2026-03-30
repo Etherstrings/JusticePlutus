@@ -133,6 +133,69 @@
   - `ENABLE_IFIND_ANALYSIS_ENHANCEMENT=true`
   - 建议本地通过 `./scripts/run_with_overlay_env.sh` 启动，让 `.env.local` 叠加在现有 `.env` 之上
 
+### 6.2.1 iFinD 增强说明
+
+iFinD 在当前项目中只做“增强”，不做基础依赖替换。
+
+行为原则：
+
+- 有 iFinD：给现有分析补充财报、估值、盈利预测等结构化数据
+- 没有 iFinD：保持当前主流程不变
+- iFinD 报错：自动跳过增强，不阻断历史行情、实时行情、筹码、搜索、LLM 和通知链路
+
+当前增强内容：
+
+- 新增可选配置：
+  - `IFIND_REFRESH_TOKEN`
+  - `ENABLE_IFIND`
+  - `ENABLE_IFIND_ANALYSIS_ENHANCEMENT`
+- 新增独立服务层：
+  - `src/ifind/auth.py`
+  - `src/ifind/client.py`
+  - `src/ifind/mappers.py`
+  - `src/ifind/schemas.py`
+  - `src/ifind/service.py`
+- 在分析上下文中按需注入：
+  - `ifind_financials`
+  - `ifind_valuation`
+  - `ifind_forecast`
+  - `ifind_quality_summary`
+- 在 LLM prompt 中新增：
+  - `基本面与估值增强`
+
+当前注入给 LLM 的重点信息包括：
+
+- 最新财报期
+- 营业总收入 / 归母净利润 / 扣非净利润
+- ROE / 毛利率 / 净利率 / 资产负债率 / 经营现金流
+- PE / PB / 市值
+- 一致预期净利润增速
+- 财务质量摘要
+
+无侵入保证：
+
+- `ENABLE_IFIND=false` 时不初始化、不请求、不改 prompt
+- 开关开启但没有 `IFIND_REFRESH_TOKEN` 时只记录 warning，直接回退到原有流程
+- iFinD 子查询失败时只返回部分数据或直接跳过，不影响主分析结果
+
+推荐本地配置方式：
+
+```dotenv
+IFIND_REFRESH_TOKEN=your_refresh_token_here
+ENABLE_IFIND=true
+ENABLE_IFIND_ANALYSIS_ENHANCEMENT=true
+```
+
+推荐运行方式：
+
+```bash
+./scripts/run_with_overlay_env.sh --stocks 600519 --no-notify
+```
+
+详细说明见：
+
+- [docs/IFIND_ENHANCEMENT_GUIDE.md](docs/IFIND_ENHANCEMENT_GUIDE.md)
+
 ### 6.3 通知（按通道）
 
 - Telegram：`TELEGRAM_BOT_TOKEN`、`TELEGRAM_CHAT_ID`
