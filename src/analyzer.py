@@ -1106,6 +1106,67 @@ class GeminiAnalyzer:
 - 成交量较昨日变化：{volume_change}倍
 - 价格较昨日变化：{context.get('price_change_ratio', 'N/A')}%
 """
+
+        if any(
+            context.get(key)
+            for key in ("ifind_financials", "ifind_valuation", "ifind_forecast", "ifind_quality_summary")
+        ):
+            financials = context.get("ifind_financials") or {}
+            valuation = context.get("ifind_valuation") or {}
+            forecast = context.get("ifind_forecast") or {}
+            quality = context.get("ifind_quality_summary") or {}
+            forecast_periods = forecast.get("periods") or []
+
+            prompt += """
+---
+
+## 基本面与估值增强
+"""
+
+            if financials:
+                prompt += f"""
+### iFinD 财报摘要
+- 最新财报期：{financials.get('report_period', 'N/A')}
+- 营业总收入：{self._format_amount(financials.get('revenue'))}
+- 归母净利润：{self._format_amount(financials.get('net_profit'))}
+- 扣非净利润：{self._format_amount(financials.get('deduct_non_net_profit'))}
+- ROE：{self._format_percent(financials.get('roe'))}
+- 毛利率：{self._format_percent(financials.get('gross_margin'))}
+- 净利率：{self._format_percent(financials.get('net_margin'))}
+- 资产负债率：{self._format_percent(financials.get('asset_liability_ratio'))}
+- 经营现金流净额：{self._format_amount(financials.get('operating_cashflow'))}
+"""
+
+            if valuation:
+                prompt += f"""
+### iFinD 估值摘要
+- 估值日期：{valuation.get('as_of_date', 'N/A')}
+- PE(TTM)：{valuation.get('pe_ttm', 'N/A')}
+- PB：{valuation.get('pb', 'N/A')}
+- 总市值：{self._format_amount(valuation.get('total_market_value'))}
+- 流通市值：{self._format_amount(valuation.get('circulating_market_value'))}
+"""
+
+            if forecast:
+                prompt += f"""
+### iFinD 一致预期
+- 一致预期净利润增速：{self._format_percent(forecast.get('expected_growth_rate'))}
+"""
+                if forecast_periods:
+                    prompt += "\n".join(
+                        f"- {item.get('period_end', 'N/A')} 预测净利润：{self._format_amount(item.get('net_profit'))}"
+                        for item in forecast_periods
+                    )
+                    prompt += "\n"
+
+            if quality:
+                prompt += f"""
+### iFinD 质量判断
+- 盈利质量：{quality.get('profit_quality', 'N/A')}
+- 现金流健康度：{quality.get('cashflow_health', 'N/A')}
+- 杠杆风险：{quality.get('leverage_risk', 'N/A')}
+- 增长可见度：{quality.get('growth_visibility', 'N/A')}
+"""
         
         # 添加新闻搜索结果（重点区域）
         prompt += """

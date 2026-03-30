@@ -33,6 +33,7 @@ from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
+from src.ifind.service import IFindService
 from bot.models import BotMessage
 
 
@@ -92,6 +93,7 @@ class StockAnalysisPipeline:
             minimax_keys=self.config.minimax_api_keys,
             news_max_age_days=self.config.news_max_age_days,
         )
+        self.ifind_service = self._build_ifind_service()
         
         logger.info(f"调度器初始化完成，最大并发数: {self.max_workers}")
         logger.info("已启用趋势分析器 (MA5>MA10>MA20 多头判断)")
@@ -108,6 +110,10 @@ class StockAnalysisPipeline:
             logger.info("搜索服务已启用 (Bocha/Tavily/SerpAPI/Brave 按配置生效)")
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
+        if self.ifind_service:
+            logger.info("iFinD 数据增强已初始化")
+        else:
+            logger.info("iFinD 数据增强未启用")
 
     def _resolve_output_dir(self) -> Optional[Path]:
         """Return the current run's output directory when configured by the CLI wrapper."""
@@ -350,6 +356,11 @@ class StockAnalysisPipeline:
                 trend_result,
                 stock_name  # 传入股票名称
             )
+            enhanced_context = self._attach_ifind_context(
+                enhanced_context,
+                code=code,
+                stock_name=stock_name,
+            )
             
             # Step 7: 调用 AI 分析（传入增强的上下文和新闻）
             result = self.analyzer.analyze(enhanced_context, news_context=news_context)
@@ -391,6 +402,44 @@ class StockAnalysisPipeline:
             logger.error(f"{stock_name}({code}) 分析失败: {e}")
             logger.exception(f"{stock_name}({code}) 详细错误信息:")
             return None
+
+    def _build_ifind_service(self) -> Optional[IFindService]:
+        """Create the optional iFinD service only when config is fully enabled."""
+        if not getattr(self.config, "enable_ifind", False):
+            return None
+        if not getattr(self.config, "ifind_refresh_token", None):
+            logger.warning("ENABLE_IFIND=true 但缺少 IFIND_REFRESH_TOKEN，跳过 iFinD 初始化")
+            return None
+        try:
+            return IFindService.from_config(self.config)
+        except Exception as exc:
+            logger.warning("iFinD 服务初始化失败，将继续使用现有分析链路: %s", exc)
+            return None
+
+    def _attach_ifind_context(
+        self,
+        context: Dict[str, Any],
+        code: str,
+        stock_name: str,
+    ) -> Dict[str, Any]:
+        """Inject normalized iFinD prompt context when the feature flags are enabled."""
+        if not getattr(self.config, "enable_ifind", False):
+            return context
+        if not getattr(self.config, "enable_ifind_analysis_enhancement", False):
+            return context
+        if not self.ifind_service:
+            return context
+
+        enhanced = context.copy()
+        try:
+            pack = self.ifind_service.get_financial_pack(code, stock_name=stock_name)
+            prompt_context = pack.to_prompt_context()
+            if prompt_context:
+                enhanced.update(prompt_context)
+                logger.info("%s(%s) iFinD financial pack injected", stock_name, code)
+        except Exception as exc:
+            logger.warning("%s(%s) iFinD enhancement skipped: %s", stock_name, code, exc)
+        return enhanced
     
     def _enhance_context(
         self,
