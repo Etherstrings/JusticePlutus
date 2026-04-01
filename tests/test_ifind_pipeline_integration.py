@@ -8,7 +8,13 @@ from src.ifind.schemas import (
 
 
 class DummyConfig:
-    def __init__(self, enable_ifind, enable_ifind_analysis_enhancement):
+    def __init__(
+        self,
+        enable_ifind,
+        enable_ifind_analysis_enhancement,
+        enable_ths_pro_data=False,
+    ):
+        self.enable_ths_pro_data = enable_ths_pro_data
         self.enable_ifind = enable_ifind
         self.enable_ifind_analysis_enhancement = enable_ifind_analysis_enhancement
 
@@ -64,6 +70,25 @@ def test_pipeline_injects_ifind_context_when_flags_enabled():
     assert enhanced["ifind_financials"]["report_period"] == "2025-12-31"
     assert enhanced["ifind_valuation"]["pe_ttm"] == 23.6
     assert enhanced["ifind_quality_summary"]["profit_quality"] == "strong"
+    assert pipeline.ifind_service.calls == [("600519", "贵州茅台")]
+
+
+def test_pipeline_injects_ifind_context_when_ths_pro_mode_enabled():
+    pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+    pipeline.config = DummyConfig(
+        enable_ths_pro_data=True,
+        enable_ifind=False,
+        enable_ifind_analysis_enhancement=True,
+    )
+    pipeline.ifind_service = FakeIFindService(_build_pack())
+
+    enhanced = pipeline._attach_ifind_context(
+        {"code": "600519", "stock_name": "贵州茅台"},
+        code="600519",
+        stock_name="贵州茅台",
+    )
+
+    assert enhanced["ifind_financials"]["report_period"] == "2025-12-31"
     assert pipeline.ifind_service.calls == [("600519", "贵州茅台")]
 
 

@@ -111,9 +111,15 @@ class StockAnalysisPipeline:
         else:
             logger.warning("搜索服务未启用（未配置 API Key）")
         if self.ifind_service:
-            logger.info("iFinD 数据增强已初始化")
+            if self._ths_pro_data_enabled():
+                logger.info("同花顺专业数据模式已启用，iFinD 服务已初始化")
+            else:
+                logger.info("iFinD 数据增强已初始化")
         else:
-            logger.info("iFinD 数据增强未启用")
+            if self._ths_pro_data_enabled():
+                logger.info("同花顺专业数据模式已启用，但 iFinD 服务不可用")
+            else:
+                logger.info("iFinD 数据增强未启用")
 
     def _resolve_output_dir(self) -> Optional[Path]:
         """Return the current run's output directory when configured by the CLI wrapper."""
@@ -405,16 +411,37 @@ class StockAnalysisPipeline:
 
     def _build_ifind_service(self) -> Optional[IFindService]:
         """Create the optional iFinD service only when config is fully enabled."""
-        if not getattr(self.config, "enable_ifind", False):
+        if not self._ths_pro_data_enabled():
             return None
         if not getattr(self.config, "ifind_refresh_token", None):
-            logger.warning("ENABLE_IFIND=true 但缺少 IFIND_REFRESH_TOKEN，跳过 iFinD 初始化")
+            if getattr(self.config, "enable_ths_pro_data", False):
+                logger.warning("ENABLE_THS_PRO_DATA=true 但缺少 IFIND_REFRESH_TOKEN，跳过 iFinD 初始化")
+            else:
+                logger.warning("ENABLE_IFIND=true 但缺少 IFIND_REFRESH_TOKEN，跳过 iFinD 初始化")
             return None
         try:
             return IFindService.from_config(self.config)
         except Exception as exc:
             logger.warning("iFinD 服务初始化失败，将继续使用现有分析链路: %s", exc)
             return None
+
+    def _ths_pro_data_enabled(self) -> bool:
+        """Resolve TongHuaShun professional mode using config helpers when available."""
+        helper = getattr(self.config, "is_ths_pro_data_enabled", None)
+        if callable(helper):
+            return bool(helper())
+        return bool(getattr(self.config, "enable_ths_pro_data", False)) or bool(
+            getattr(self.config, "enable_ifind", False)
+        )
+
+    def _ifind_financial_enhancement_enabled(self) -> bool:
+        """Resolve financial-pack prompt injection using config helpers when available."""
+        helper = getattr(self.config, "is_ifind_financial_enhancement_enabled", None)
+        if callable(helper):
+            return bool(helper())
+        return self._ths_pro_data_enabled() and bool(
+            getattr(self.config, "enable_ifind_analysis_enhancement", False)
+        )
 
     def _attach_ifind_context(
         self,
@@ -423,9 +450,7 @@ class StockAnalysisPipeline:
         stock_name: str,
     ) -> Dict[str, Any]:
         """Inject normalized iFinD prompt context when the feature flags are enabled."""
-        if not getattr(self.config, "enable_ifind", False):
-            return context
-        if not getattr(self.config, "enable_ifind_analysis_enhancement", False):
+        if not self._ifind_financial_enhancement_enabled():
             return context
         if not self.ifind_service:
             return context
