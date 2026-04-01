@@ -23,6 +23,7 @@ def _load_config(monkeypatch, **env):
         "DEEPSEEK_API_KEYS",
         "STOCK_LIST",
         "IFIND_REFRESH_TOKEN",
+        "ENABLE_THS_PRO_DATA",
         "ENABLE_IFIND",
         "ENABLE_IFIND_ANALYSIS_ENHANCEMENT",
     ]
@@ -160,3 +161,27 @@ def test_ifind_flags_and_refresh_token_are_loaded(monkeypatch):
     assert cfg.ifind_refresh_token == "refresh-token-demo"
     assert cfg.enable_ifind is True
     assert cfg.enable_ifind_analysis_enhancement is True
+
+
+def test_ths_pro_data_master_switch_enables_professional_mode(monkeypatch):
+    cfg = _load_config(
+        monkeypatch,
+        ENABLE_THS_PRO_DATA="true",
+        IFIND_REFRESH_TOKEN="refresh-token-demo",
+    )
+
+    assert cfg.enable_ths_pro_data is True
+    assert cfg.is_ths_pro_data_enabled() is True
+    assert cfg.is_ifind_financial_enhancement_enabled() is True
+
+
+def test_legacy_ifind_flags_still_enable_legacy_mode(monkeypatch):
+    cfg = _load_config(
+        monkeypatch,
+        ENABLE_IFIND="true",
+        ENABLE_IFIND_ANALYSIS_ENHANCEMENT="false",
+    )
+
+    assert cfg.enable_ths_pro_data is False
+    assert cfg.is_ths_pro_data_enabled() is True
+    assert cfg.is_ifind_financial_enhancement_enabled() is False

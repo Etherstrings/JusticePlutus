@@ -299,6 +299,7 @@ class Config:
     trading_day_check_enabled: bool = True
 
     # === 实时行情增强数据配置 ===
+    enable_ths_pro_data: bool = False
     enable_ifind: bool = False
     enable_ifind_analysis_enhancement: bool = False
     # 实时行情开关（关闭后使用历史收盘价进行分析）
@@ -389,6 +390,22 @@ class Config:
         if cls._instance is None:
             cls._instance = cls._load_from_env()
         return cls._instance
+
+    def is_ths_pro_data_enabled(self) -> bool:
+        """Whether TongHuaShun professional mode is enabled by the new or legacy switch."""
+        return self.enable_ths_pro_data or self.enable_ifind
+
+    def is_ifind_financial_enhancement_enabled(self) -> bool:
+        """Whether iFinD financial-pack enhancement should be injected into analysis."""
+        return self.is_ths_pro_data_enabled() and self.enable_ifind_analysis_enhancement
+
+    @classmethod
+    def _resolve_ifind_analysis_enhancement(cls) -> bool:
+        """Default financial enhancement to on in THS mode unless explicitly disabled."""
+        explicit = os.getenv('ENABLE_IFIND_ANALYSIS_ENHANCEMENT')
+        if explicit is not None:
+            return explicit.lower() == 'true'
+        return os.getenv('ENABLE_THS_PRO_DATA', 'false').lower() == 'true'
     
     @classmethod
     def _load_from_env(cls) -> 'Config':
@@ -756,10 +773,9 @@ class Config:
                 os.getenv('MARKET_REVIEW_REGION', 'cn')
             ),
             trading_day_check_enabled=os.getenv('TRADING_DAY_CHECK_ENABLED', 'true').lower() != 'false',
+            enable_ths_pro_data=os.getenv('ENABLE_THS_PRO_DATA', 'false').lower() == 'true',
             enable_ifind=os.getenv('ENABLE_IFIND', 'false').lower() == 'true',
-            enable_ifind_analysis_enhancement=(
-                os.getenv('ENABLE_IFIND_ANALYSIS_ENHANCEMENT', 'false').lower() == 'true'
-            ),
+            enable_ifind_analysis_enhancement=cls._resolve_ifind_analysis_enhancement(),
             webui_enabled=os.getenv('WEBUI_ENABLED', 'false').lower() == 'true',
             webui_host=os.getenv('WEBUI_HOST', '127.0.0.1'),
             webui_port=int(os.getenv('WEBUI_PORT', '8000')),
