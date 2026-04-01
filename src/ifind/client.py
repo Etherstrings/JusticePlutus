@@ -33,6 +33,12 @@ class IFindClient:
             },
         )
 
+    def get_daily_data(self, stock_code: str, start_date: str, end_date: str) -> Dict[str, Any]:
+        raise NotImplementedError("TongHuaShun daily data endpoint not configured")
+
+    def get_realtime_quote(self, stock_code: str) -> Dict[str, Any]:
+        raise NotImplementedError("TongHuaShun realtime endpoint not configured")
+
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         access_token = self.auth_provider.get_access_token()
         response = self.session.post(

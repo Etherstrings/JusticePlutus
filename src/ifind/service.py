@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from src.config import Config
 from src.ifind.auth import IFindAuthProvider
@@ -25,6 +25,7 @@ class IFindService:
     def __init__(self, client: IFindClient):
         self.client = client
         self._financial_pack_cache: Dict[str, IFindFinancialPack] = {}
+        self._capability_cache: Dict[str, bool] = {}
 
     @classmethod
     def from_config(cls, config: Config) -> "IFindService":
@@ -64,6 +65,57 @@ class IFindService:
         pack.quality_summary = derive_quality_summary(pack)
         self._financial_pack_cache[stock_code] = pack
         return pack
+
+    def supports_daily_data(self) -> bool:
+        return self._supports("daily_data", "get_daily_data")
+
+    def supports_realtime_quote(self) -> bool:
+        return self._supports("realtime_quote", "get_realtime_quote")
+
+    def get_daily_data(self, stock_code: str, start_date: str, end_date: str) -> Optional[Any]:
+        if not self.supports_daily_data():
+            return None
+        try:
+            return self.client.get_daily_data(stock_code, start_date, end_date)
+        except NotImplementedError:
+            self._capability_cache["daily_data"] = False
+            return None
+
+    def get_realtime_quote(self, stock_code: str) -> Optional[Any]:
+        if not self.supports_realtime_quote():
+            return None
+        try:
+            return self.client.get_realtime_quote(stock_code)
+        except NotImplementedError:
+            self._capability_cache["realtime_quote"] = False
+            return None
+
+    def _supports(self, capability: str, method_name: str) -> bool:
+        if capability in self._capability_cache:
+            return self._capability_cache[capability]
+
+        method = getattr(self.client, method_name, None)
+        if method is None:
+            self._capability_cache[capability] = False
+            return False
+
+        try:
+            if capability == "daily_data":
+                method("__probe__", "1970-01-01", "1970-01-02")
+            elif capability == "realtime_quote":
+                method("__probe__")
+            else:
+                self._capability_cache[capability] = False
+                return False
+        except NotImplementedError:
+            self._capability_cache[capability] = False
+            return False
+        except Exception:
+            self._capability_cache[capability] = True
+            return True
+
+        self._capability_cache[capability] = True
+        return True
 
 
 def derive_quality_summary(pack: IFindFinancialPack) -> FinancialQualitySummary:

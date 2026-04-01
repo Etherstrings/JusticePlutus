@@ -6,9 +6,10 @@ def _smart_table(**columns):
 
 
 class FakeIFindClient:
-    def __init__(self, responses=None, errors=None):
+    def __init__(self, responses=None, errors=None, supported_capabilities=None):
         self.responses = responses or {}
         self.errors = errors or {}
+        self.supported_capabilities = supported_capabilities or {}
         self.calls = []
 
     def smart_stock_picking(self, searchstring, searchtype="stock"):
@@ -20,6 +21,21 @@ class FakeIFindClient:
             if keyword in searchstring:
                 return payload
         raise AssertionError(f"unexpected query: {searchstring}")
+
+    def get_daily_data(self, stock_code, start_date, end_date):
+        if not self.supported_capabilities.get("daily_data"):
+            raise NotImplementedError("daily data unavailable")
+        return {
+            "stock_code": stock_code,
+            "start_date": start_date,
+            "end_date": end_date,
+            "rows": [],
+        }
+
+    def get_realtime_quote(self, stock_code):
+        if not self.supported_capabilities.get("realtime_quote"):
+            raise NotImplementedError("realtime quote unavailable")
+        return {"stock_code": stock_code, "price": 123.45}
 
 
 def test_service_returns_partial_pack_when_forecast_call_fails():
@@ -115,3 +131,28 @@ def test_service_reuses_per_stock_cache():
 
     assert first is second
     assert len(client.calls) == 3
+
+
+def test_service_reports_daily_and_realtime_capabilities_from_client():
+    client = FakeIFindClient(supported_capabilities={"daily_data": True, "realtime_quote": True})
+    service = IFindService(client=client)
+
+    assert service.supports_daily_data() is True
+    assert service.supports_realtime_quote() is True
+    assert service.get_daily_data("600519", start_date="2026-03-01", end_date="2026-03-31") == {
+        "stock_code": "600519",
+        "start_date": "2026-03-01",
+        "end_date": "2026-03-31",
+        "rows": [],
+    }
+    assert service.get_realtime_quote("600519") == {"stock_code": "600519", "price": 123.45}
+
+
+def test_service_treats_not_implemented_market_methods_as_unavailable():
+    client = FakeIFindClient()
+    service = IFindService(client=client)
+
+    assert service.supports_daily_data() is False
+    assert service.supports_realtime_quote() is False
+    assert service.get_daily_data("600519", start_date="2026-03-01", end_date="2026-03-31") is None
+    assert service.get_realtime_quote("600519") is None
