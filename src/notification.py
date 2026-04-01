@@ -130,6 +130,9 @@ class NotificationService(
         self._markdown_to_image_max_chars = getattr(
             config, 'markdown_to_image_max_chars', 15000
         )
+        self._append_image_after_text_notify = getattr(
+            config, 'append_image_after_text_notify', False
+        )
 
         # 仅分析结果摘要（Issue #262）：true 时只推送汇总，不含个股详情
         self._report_summary_only = getattr(config, 'report_summary_only', False)
@@ -1584,7 +1587,10 @@ class NotificationService(
         lines.append("")
 
     def _should_use_image_for_channel(
-        self, channel: NotificationChannel, image_bytes: Optional[bytes]
+        self,
+        channel: NotificationChannel,
+        image_bytes: Optional[bytes],
+        ignore_channel_config: bool = False,
     ) -> bool:
         """
         Decide whether to send as image for the given channel (Issue #289).
@@ -1593,7 +1599,12 @@ class NotificationService(
         - image_bytes is None: conversion failed / imgkit not installed / content over max_chars
         - WeChat: image exceeds ~2MB limit
         """
-        if channel.value not in self._markdown_to_image_channels or image_bytes is None:
+        if image_bytes is None:
+            return False
+        if (
+            not ignore_channel_config
+            and channel.value not in self._markdown_to_image_channels
+        ):
             return False
         if channel == NotificationChannel.WECHAT and len(image_bytes) > WECHAT_IMAGE_MAX_BYTES:
             logger.warning(
@@ -1602,6 +1613,87 @@ class NotificationService(
             )
             return False
         return True
+
+    def _append_image_mode_enabled(self) -> bool:
+        """Return whether text notifications should be followed by a PNG append."""
+        return bool(self._append_image_after_text_notify)
+
+    def _render_png_for_append(self, content: str) -> Optional[bytes]:
+        """Render a PNG for append-image mode, returning None on any fallback path."""
+        if not self._append_image_mode_enabled():
+            return None
+
+        from src.md2img import markdown_to_image
+
+        return markdown_to_image(
+            content, max_chars=self._markdown_to_image_max_chars
+        )
+
+    def _append_image_after_text(
+        self,
+        content: str,
+        channels: List[NotificationChannel],
+        email_receivers: Optional[Dict[NotificationChannel, Optional[List[str]]]] = None,
+    ) -> None:
+        """
+        Append a PNG after successful text notifications.
+
+        Only channels with existing image delivery support are included.
+        This method never raises and never affects the original text-send result.
+        """
+        if not self._append_image_mode_enabled() or not channels:
+            return
+
+        supported_channels = {
+            NotificationChannel.WECHAT,
+            NotificationChannel.TELEGRAM,
+            NotificationChannel.EMAIL,
+            NotificationChannel.CUSTOM,
+        }
+        target_channels = [channel for channel in channels if channel in supported_channels]
+        if not target_channels:
+            return
+
+        image_bytes = self._render_png_for_append(content)
+        if image_bytes is None:
+            logger.warning("图片补发渲染失败，已保持文字推送结果")
+            return
+
+        logger.info("文本发送成功，开始补发 PNG 图片")
+        email_receivers = email_receivers or {}
+        for channel in target_channels:
+            if not self._should_use_image_for_channel(
+                channel,
+                image_bytes,
+                ignore_channel_config=True,
+            ):
+                logger.info("%s 不满足图片补发条件，保留文字推送", channel.value)
+                continue
+
+            try:
+                if channel == NotificationChannel.WECHAT:
+                    result = self._send_wechat_image(image_bytes)
+                elif channel == NotificationChannel.TELEGRAM:
+                    result = self._send_telegram_photo(image_bytes)
+                elif channel == NotificationChannel.EMAIL:
+                    result = self._send_email_with_inline_image(
+                        image_bytes,
+                        receivers=email_receivers.get(channel),
+                    )
+                elif channel == NotificationChannel.CUSTOM:
+                    result = self._send_custom_webhook_image(
+                        image_bytes,
+                        fallback_content="",
+                    )
+                else:
+                    result = False
+
+                if result:
+                    logger.info("%s 图片补发成功", channel.value)
+                else:
+                    logger.warning("%s 图片补发失败，已保留文字结果", channel.value)
+            except Exception as e:
+                logger.error("%s 图片补发异常: %s", channel.value, e)
 
     def send(
         self,
@@ -1639,43 +1731,51 @@ class NotificationService(
 
         # Markdown to image (Issue #289): convert once if any channel needs it.
         # Per-channel decision via _should_use_image_for_channel (see send() docstring for fallback rules).
+        append_image_mode = self._append_image_mode_enabled()
         image_bytes = None
-        channels_needing_image = {
-            ch for ch in self._available_channels
-            if ch.value in self._markdown_to_image_channels
-        }
-        if channels_needing_image:
-            from src.md2img import markdown_to_image
-            image_bytes = markdown_to_image(
-                content, max_chars=self._markdown_to_image_max_chars
-            )
-            if image_bytes:
-                logger.info("Markdown 已转换为图片，将向 %s 发送图片",
-                            [ch.value for ch in channels_needing_image])
-            elif channels_needing_image:
-                try:
-                    from src.config import get_config
-                    engine = getattr(get_config(), "md2img_engine", "wkhtmltoimage")
-                except Exception:
-                    engine = "wkhtmltoimage"
-                hint = (
-                    "npm i -g markdown-to-file" if engine == "markdown-to-file"
-                    else "wkhtmltopdf (apt install wkhtmltopdf / brew install wkhtmltopdf)"
+        channels_needing_image = set()
+        if not append_image_mode:
+            channels_needing_image = {
+                ch for ch in self._available_channels
+                if ch.value in self._markdown_to_image_channels
+            }
+            if channels_needing_image:
+                from src.md2img import markdown_to_image
+                image_bytes = markdown_to_image(
+                    content, max_chars=self._markdown_to_image_max_chars
                 )
-                logger.warning(
-                    "Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
-                    hint,
-                )
+                if image_bytes:
+                    logger.info("Markdown 已转换为图片，将向 %s 发送图片",
+                                [ch.value for ch in channels_needing_image])
+                elif channels_needing_image:
+                    try:
+                        from src.config import get_config
+                        engine = getattr(get_config(), "md2img_engine", "wkhtmltoimage")
+                    except Exception:
+                        engine = "wkhtmltoimage"
+                    hint = (
+                        "npm i -g markdown-to-file" if engine == "markdown-to-file"
+                        else "wkhtmltopdf (apt install wkhtmltopdf / brew install wkhtmltopdf)"
+                    )
+                    logger.warning(
+                        "Markdown 转图片失败，将回退为文本发送。请检查 MARKDOWN_TO_IMAGE_CHANNELS 配置并安装 %s",
+                        hint,
+                    )
 
         channel_names = self.get_channel_names()
         logger.info(f"正在向 {len(self._available_channels)} 个渠道发送通知：{channel_names}")
 
         success_count = 0
         fail_count = 0
+        successful_channels: List[NotificationChannel] = []
+        successful_email_receivers: Dict[NotificationChannel, Optional[List[str]]] = {}
 
         for channel in self._available_channels:
             channel_name = ChannelDetector.get_channel_name(channel)
-            use_image = self._should_use_image_for_channel(channel, image_bytes)
+            use_image = (
+                False if append_image_mode
+                else self._should_use_image_for_channel(channel, image_bytes)
+            )
             try:
                 if channel == NotificationChannel.WECHAT:
                     if use_image:
@@ -1701,6 +1801,8 @@ class NotificationService(
                         )
                     else:
                         result = self.send_to_email(content, receivers=receivers)
+                    if append_image_mode and result:
+                        successful_email_receivers[channel] = receivers
                 elif channel == NotificationChannel.PUSHOVER:
                     result = self.send_to_pushover(content)
                 elif channel == NotificationChannel.PUSHPLUS:
@@ -1724,12 +1826,20 @@ class NotificationService(
 
                 if result:
                     success_count += 1
+                    successful_channels.append(channel)
                 else:
                     fail_count += 1
 
             except Exception as e:
                 logger.error(f"{channel_name} 发送失败: {e}")
                 fail_count += 1
+
+        if append_image_mode and successful_channels:
+            self._append_image_after_text(
+                content,
+                successful_channels,
+                email_receivers=successful_email_receivers,
+            )
 
         logger.info(f"通知发送完成：成功 {success_count} 个，失败 {fail_count} 个")
         return success_count > 0 or context_success
