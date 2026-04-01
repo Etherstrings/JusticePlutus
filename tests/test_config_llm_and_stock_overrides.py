@@ -26,6 +26,7 @@ def _load_config(monkeypatch, **env):
         "ENABLE_THS_PRO_DATA",
         "ENABLE_IFIND",
         "ENABLE_IFIND_ANALYSIS_ENHANCEMENT",
+        "APPEND_IMAGE_AFTER_TEXT_NOTIFY",
     ]
     for key in tracked_keys:
         monkeypatch.delenv(key, raising=False)
@@ -185,3 +186,18 @@ def test_legacy_ifind_flags_still_enable_legacy_mode(monkeypatch):
     assert cfg.enable_ths_pro_data is False
     assert cfg.is_ths_pro_data_enabled() is True
     assert cfg.is_ifind_financial_enhancement_enabled() is False
+
+
+def test_append_image_after_text_notify_defaults_to_disabled(monkeypatch):
+    cfg = _load_config(monkeypatch)
+
+    assert cfg.append_image_after_text_notify is False
+
+
+def test_append_image_after_text_notify_can_be_enabled(monkeypatch):
+    cfg = _load_config(
+        monkeypatch,
+        APPEND_IMAGE_AFTER_TEXT_NOTIFY="true",
+    )
+
+    assert cfg.append_image_after_text_notify is True

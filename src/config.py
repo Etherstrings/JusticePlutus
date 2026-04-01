@@ -224,6 +224,9 @@ class Config:
     # 单股推送模式：每分析完一只股票立即推送，而不是汇总后推送
     single_stock_notify: bool = False
 
+    # 通知增强：保留原文字推送，并在文本后追加一张 PNG 图片
+    append_image_after_text_notify: bool = False
+
     # 报告类型：simple(精简) 或 full(完整)
     report_type: str = "simple"
 
@@ -729,6 +732,10 @@ class Config:
             astrbot_url=os.getenv('ASTRBOT_URL'),
             astrbot_token=os.getenv('ASTRBOT_TOKEN'),
             single_stock_notify=os.getenv('SINGLE_STOCK_NOTIFY', 'false').lower() == 'true',
+            append_image_after_text_notify=os.getenv(
+                'APPEND_IMAGE_AFTER_TEXT_NOTIFY',
+                'false',
+            ).lower() == 'true',
             report_type=cls._parse_report_type(os.getenv('REPORT_TYPE', 'simple')),
             report_summary_only=os.getenv('REPORT_SUMMARY_ONLY', 'false').lower() == 'true',
             report_templates_dir=os.getenv('REPORT_TEMPLATES_DIR', 'templates'),
