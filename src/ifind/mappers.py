@@ -57,6 +57,19 @@ def _find_value(parsed_columns: List[Tuple[str, Optional[str], Any]], keyword: s
     return None, None
 
 
+def extract_stock_name(payload: Dict[str, Any]) -> str:
+    table = _extract_table(payload)
+    if not table:
+        return ""
+
+    for field in ("股票简称", "证券简称", "股票名称", "证券名称"):
+        value = _first_value(table.get(field))
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return ""
+
+
 def map_financial_statement_pack(stock_code: str, payload: Dict[str, Any]) -> Optional[FinancialStatementPack]:
     table = _extract_table(payload)
     if not table:
@@ -99,13 +112,26 @@ def map_valuation_pack(stock_code: str, payload: Dict[str, Any]) -> Optional[Val
 
     pe_ttm, as_of_date = _find_value(parsed, "市盈率(pe)")
     pb, pb_date = _find_value(parsed, "市净率(pb)")
+    volume_ratio, volume_ratio_date = _find_value(parsed, "量比")
+    turnover_rate, turnover_rate_date = _find_value(parsed, "换手率")
     total_mv, total_mv_date = _find_value(parsed, "总市值")
     circ_mv, circ_mv_date = _find_value(parsed, "流通市值")
+    if circ_mv is None:
+        circ_mv, circ_mv_date = _find_value(parsed, "市值(不含限售股)")
 
     return ValuationPack(
         stock_code=stock_code,
         stock_name=stock_name,
-        as_of_date=as_of_date or pb_date or total_mv_date or circ_mv_date,
+        as_of_date=(
+            as_of_date
+            or pb_date
+            or volume_ratio_date
+            or turnover_rate_date
+            or total_mv_date
+            or circ_mv_date
+        ),
+        volume_ratio=_to_float(volume_ratio),
+        turnover_rate=_to_float(turnover_rate),
         pe_ttm=_to_float(pe_ttm),
         pb=_to_float(pb),
         total_market_value=_to_float(total_mv),

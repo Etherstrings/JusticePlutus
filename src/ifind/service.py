@@ -4,7 +4,12 @@ from typing import Any, Dict, Optional
 from src.config import Config
 from src.ifind.auth import IFindAuthProvider
 from src.ifind.client import IFindClient
-from src.ifind.mappers import map_financial_statement_pack, map_forecast_pack, map_valuation_pack
+from src.ifind.mappers import (
+    extract_stock_name,
+    map_financial_statement_pack,
+    map_forecast_pack,
+    map_valuation_pack,
+)
 from src.ifind.schemas import (
     FinancialQualitySummary,
     IFindFinancialPack,
@@ -15,16 +20,18 @@ logger = logging.getLogger(__name__)
 
 
 class IFindService:
+    STOCK_NAME_QUERY = "{target} 股票简称"
     FINANCIAL_QUERY = (
         "{target} 营业总收入 归属于母公司所有者的净利润 扣除非经常性损益后的净利润 "
         "销售毛利率 销售净利率 净资产收益率roe 资产负债率 经营活动产生的现金流量净额 存货"
     )
-    VALUATION_QUERY = "{target} 市盈率 市净率 总市值 流通市值"
+    VALUATION_QUERY = "{target} 量比 换手率 市盈率 市净率 总市值 流通市值"
     FORECAST_QUERY = "{target} 预测净利润平均值 预测主营业务收入平均值 2026 2027"
 
     def __init__(self, client: IFindClient):
         self.client = client
         self._financial_pack_cache: Dict[str, IFindFinancialPack] = {}
+        self._stock_name_cache: Dict[str, str] = {}
         self._capability_cache: Dict[str, bool] = {}
 
     @classmethod
@@ -62,9 +69,27 @@ class IFindService:
             or (pack.valuation.stock_name if pack.valuation else "")
             or (pack.forecast.stock_name if pack.forecast else "")
         )
+        if pack.stock_name:
+            self._stock_name_cache[stock_code] = pack.stock_name
         pack.quality_summary = derive_quality_summary(pack)
         self._financial_pack_cache[stock_code] = pack
         return pack
+
+    def get_stock_name(self, stock_code: str) -> str:
+        cached = self._stock_name_cache.get(stock_code)
+        if cached:
+            return cached
+
+        try:
+            payload = self.client.smart_stock_picking(self.STOCK_NAME_QUERY.format(target=stock_code))
+        except Exception as exc:
+            logger.warning("iFinD stock name query failed for %s: %s", stock_code, exc)
+            return ""
+
+        stock_name = extract_stock_name(payload)
+        if stock_name:
+            self._stock_name_cache[stock_code] = stock_name
+        return stock_name
 
     def supports_daily_data(self) -> bool:
         return self._supports("daily_data", "get_daily_data")

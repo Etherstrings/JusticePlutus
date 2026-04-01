@@ -64,8 +64,9 @@
 
 | 模块 | 主要来源 | 说明 |
 |------|----------|------|
-| 历史日线 | TongHuaShun(iFinD，若行情能力可用) -> Tushare, Efinance, Akshare, Pytdx, Baostock, YFinance | 用于 MA/趋势与历史走势 |
-| 实时行情 | TongHuaShun(iFinD，若行情能力可用) -> `REALTIME_SOURCE_PRIORITY` 指定顺序 | 获取价格、量比、换手率等 |
+| 历史日线 | TongHuaShun(iFinD `cmd_history_quotation`) -> Tushare, Efinance, Akshare, Pytdx, Baostock, YFinance | 用于 MA/趋势与历史走势 |
+| 实时行情 | TongHuaShun(iFinD `real_time_quotation`) -> 同日 iFinD 市场指标补齐 -> `REALTIME_SOURCE_PRIORITY` 指定顺序补缺字段 | 获取价格、量比、换手率等 |
+| 股票名称 | 实时行情名称 -> TongHuaShun(iFinD `股票简称` 轻量查询) -> 静态映射/其它数据源 | 减少“股票xxxx”占位名称与外部名称依赖 |
 | 筹码分布 | HSCloud, Wencai, Akshare, Tushare, Efinance | 用于筹码结构分析 |
 | 搜索增强 | Bocha, Tavily, SerpAPI | 保持开放搜索混合源，用于风险、利好、业绩预期、行业信息 |
 | LLM 分析 | AIHubMix(OpenAI-compatible), OpenAI, Gemini, Anthropic | 生成结构化决策仪表盘 |
@@ -142,7 +143,8 @@
 
 - 结构化专业数据优先走同花顺
 - 开放搜索继续保持混合源
-- 行情类能力只有在接口已实现且账号可用时才切换，否则自动回退到现有链路
+- 当前已接入 iFinD 官方日线与实时行情接口，并补上了 `股票简称` 轻量查询；账号可用时会优先使用，失败时自动回退到现有链路
+- 当官方实时行情缺少 `量比/换手率/PE/PB/总市值/流通市值` 等字段时，如果 iFinD 同日市场指标可用，则会优先补齐；否则继续保持现有补缺链路
 
 行为原则：
 
@@ -169,8 +171,9 @@
   - `ifind_forecast`
   - `ifind_quality_summary`
 - 在数据路由层新增 TongHuaShun-first 钩子：
-  - 日线：若 THS 行情能力可用则优先尝试，否则直接回退
-  - 实时：若 THS 行情能力可用则优先尝试，否则继续 `REALTIME_SOURCE_PRIORITY`
+  - 日线：优先走 iFinD `cmd_history_quotation`，失败时直接回退
+  - 实时：优先走 iFinD `real_time_quotation`，缺失字段继续用 `REALTIME_SOURCE_PRIORITY` 补齐
+  - 股票名称：优先复用实时行情名称；实时未返回时，轻量查询 iFinD `股票简称`；仍不可用再回退静态映射和其它数据源
 - 在 LLM prompt 中新增：
   - `基本面与估值增强`
 

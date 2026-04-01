@@ -18,7 +18,7 @@ import logging
 import random
 import time
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import date, datetime
 from typing import Optional, List, Tuple, Dict, Any
 
 import pandas as pd
@@ -530,6 +530,25 @@ class DataFetcherManager:
         if callable(supports):
             return bool(supports())
         return True
+
+    @staticmethod
+    def _ifind_market_metrics_backfill_enabled(config: Any) -> bool:
+        helper = getattr(config, 'is_ifind_financial_enhancement_enabled', None)
+        if callable(helper):
+            return bool(helper())
+        return DataFetcherManager._ths_mode_enabled(config) and bool(
+            getattr(config, 'enable_ifind_analysis_enhancement', False)
+        )
+
+    @staticmethod
+    def _acceptable_ifind_metric_dates() -> set[str]:
+        today_str = date.today().isoformat()
+        accepted = {today_str}
+        now = datetime.now()
+        if (now.hour, now.minute) < (9, 30):
+            previous_business_day = (pd.Timestamp(today_str) - pd.offsets.BDay(1)).date().isoformat()
+            accepted.add(previous_business_day)
+        return accepted
     
     def get_daily_data(
         self, 
@@ -840,6 +859,9 @@ class DataFetcherManager:
                 if quote is not None and quote.has_basic_data():
                     primary_quote = quote
                     logger.info(f"[实时行情] {stock_code} 成功获取 (来源: ifind)")
+                    filled = self._backfill_ifind_market_metrics(primary_quote, stock_code, config)
+                    if filled:
+                        logger.info(f"[实时行情] {stock_code} 从 ifind_market_metrics 补充了缺失字段: {filled}")
                     if not self._quote_needs_supplement(primary_quote):
                         return primary_quote
                     logger.debug(f"[实时行情] {stock_code} iFinD 部分字段缺失，尝试从后续数据源补充")
@@ -967,6 +989,37 @@ class DataFetcherManager:
                     filled.append(f)
         return filled
 
+    def _backfill_ifind_market_metrics(self, quote, stock_code: str, config: Any) -> list[str]:
+        """Use same-day iFinD market metrics to reduce external supplements."""
+        if not self._ifind_fetcher or not self._ifind_market_metrics_backfill_enabled(config):
+            return []
+
+        service = getattr(self._ifind_fetcher, 'service', None)
+        get_pack = getattr(service, 'get_financial_pack', None)
+        if not callable(get_pack):
+            return []
+
+        pack = get_pack(stock_code)
+        valuation = getattr(pack, 'valuation', None)
+        if valuation is None or getattr(valuation, 'as_of_date', None) not in self._acceptable_ifind_metric_dates():
+            return []
+
+        metric_values = {
+            'volume_ratio': getattr(valuation, 'volume_ratio', None),
+            'turnover_rate': getattr(valuation, 'turnover_rate', None),
+            'pe_ratio': getattr(valuation, 'pe_ttm', None),
+            'pb_ratio': getattr(valuation, 'pb', None),
+            'total_mv': getattr(valuation, 'total_market_value', None),
+            'circ_mv': getattr(valuation, 'circulating_market_value', None),
+        }
+
+        filled: list[str] = []
+        for field in self._SUPPLEMENT_FIELDS:
+            if getattr(quote, field, None) is None and metric_values.get(field) is not None:
+                setattr(quote, field, metric_values[field])
+                filled.append(field)
+        return filled
+
     def get_chip_distribution(self, stock_code: str):
         """
         获取筹码分布数据（带熔断和多数据源降级）
@@ -1053,6 +1106,8 @@ class DataFetcherManager:
         stock_code = normalize_stock_code(stock_code)
         static_name = STOCK_NAME_MAP.get(stock_code)
 
+        from src.config import get_config
+
         # 1. 先检查缓存
         if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
             return self._stock_name_cache[stock_code]
@@ -1069,6 +1124,22 @@ class DataFetcherManager:
                 self._stock_name_cache[stock_code] = name
                 logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
                 return name
+
+        config = get_config()
+        if (
+            self._ths_mode_enabled(config)
+            and self._ifind_fetcher
+            and hasattr(self._ifind_fetcher, 'get_stock_name')
+            and (allow_realtime or not is_meaningful_stock_name(static_name, stock_code))
+        ):
+            try:
+                name = self._ifind_fetcher.get_stock_name(stock_code)
+                if is_meaningful_stock_name(name, stock_code):
+                    self._stock_name_cache[stock_code] = name
+                    logger.info(f"[股票名称] 从 IFindFetcher 获取: {stock_code} -> {name}")
+                    return name
+            except Exception as e:
+                logger.debug(f"[股票名称] IFindFetcher 获取失败: {e}")
 
         if is_meaningful_stock_name(static_name, stock_code):
             self._stock_name_cache[stock_code] = static_name

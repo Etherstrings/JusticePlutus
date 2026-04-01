@@ -464,11 +464,42 @@ class StockAnalysisPipeline:
             prompt_context = pack.to_prompt_context()
             if prompt_context:
                 enhanced.update(prompt_context)
+                self._backfill_realtime_from_ifind_valuation(enhanced, prompt_context)
                 logger.info("%s(%s) iFinD financial pack injected", stock_name, code)
         except Exception as exc:
             logger.warning("%s(%s) iFinD enhancement skipped: %s", stock_name, code, exc)
         return enhanced
-    
+
+    def _backfill_realtime_from_ifind_valuation(
+        self,
+        context: Dict[str, Any],
+        prompt_context: Dict[str, Any],
+    ) -> None:
+        """Backfill missing realtime valuation fields with same-day iFinD data."""
+        realtime = context.get("realtime")
+        valuation = prompt_context.get("ifind_valuation")
+        if not isinstance(realtime, dict) or not isinstance(valuation, dict):
+            return
+
+        reference_date = context.get("date") or date.today().isoformat()
+        if valuation.get("as_of_date") != reference_date:
+            return
+
+        for realtime_key, valuation_key in (
+            ("volume_ratio", "volume_ratio"),
+            ("turnover_rate", "turnover_rate"),
+            ("pe_ratio", "pe_ttm"),
+            ("pb_ratio", "pb"),
+            ("total_mv", "total_market_value"),
+            ("circ_mv", "circulating_market_value"),
+        ):
+            if realtime.get(realtime_key) is None and valuation.get(valuation_key) is not None:
+                realtime[realtime_key] = valuation[valuation_key]
+
+        volume_ratio = realtime.get("volume_ratio")
+        if volume_ratio is not None:
+            realtime["volume_ratio_desc"] = self._describe_volume_ratio(volume_ratio)
+
     def _enhance_context(
         self,
         context: Dict[str, Any],

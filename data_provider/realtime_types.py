@@ -92,6 +92,7 @@ def safe_int(val: Any, default: Optional[int] = None) -> Optional[int]:
 
 class RealtimeSource(Enum):
     """实时行情数据源"""
+    IFIND = "ifind"                 # 同花顺 iFinD
     EFINANCE = "efinance"           # 东方财富（efinance库）
     AKSHARE_EM = "akshare_em"       # 东方财富（akshare库）
     AKSHARE_SINA = "akshare_sina"   # 新浪财经
@@ -123,7 +124,7 @@ class UnifiedRealtimeQuote:
     change_amount: Optional[float] = None   # 涨跌额
     
     # === 量价指标（部分源可能缺失）===
-    volume: Optional[int] = None            # 成交量（手）
+    volume: Optional[int] = None            # 成交量（股）
     amount: Optional[float] = None          # 成交额（元）
     volume_ratio: Optional[float] = None    # 量比
     turnover_rate: Optional[float] = None   # 换手率(%)

@@ -23,6 +23,8 @@ class ValuationPack:
     stock_code: str
     stock_name: str = ""
     as_of_date: Optional[str] = None
+    volume_ratio: Optional[float] = None
+    turnover_rate: Optional[float] = None
     pe_ttm: Optional[float] = None
     pb: Optional[float] = None
     total_market_value: Optional[float] = None

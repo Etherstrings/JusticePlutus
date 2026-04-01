@@ -64,8 +64,11 @@
   - `ifind_forecast`
   - `ifind_quality_summary`
 - 初始化数据层时，会把共享的 iFinD service 包装成 TongHuaShun-first fetcher
-- 如果 THS 日线 / 实时行情能力可用，则优先尝试
-- 如果能力未实现、无权限或失败，则立即回退到现有日线 / 实时链路
+- 日线已接入 iFinD 官方 `cmd_history_quotation`
+- 实时已接入 iFinD 官方 `real_time_quotation`
+- 股票名称已接入 iFinD `股票简称` 轻量查询，实时接口没返回名称时会优先补一次同花顺简称
+- 当 `real_time_quotation` 缺市场字段时，会优先尝试用“同日 iFinD 市场指标包”补齐 `量比/换手率/PE/PB/总市值/流通市值`
+- 如果字段缺失、无权限或请求失败，则立即回退到现有日线 / 实时链路
 
 ### 4. 增强了 LLM Prompt
 
@@ -117,13 +120,30 @@
 
 以下能力不依赖 iFinD 完整可用：
 
-- 历史日线（若 THS 行情能力不可用则自动回退）
-- 实时行情（若 THS 行情能力不可用则自动回退）
+- 历史日线（若 iFinD `cmd_history_quotation` 不可用则自动回退）
+- 实时行情（若 iFinD `real_time_quotation` 不可用或字段不全则自动回退 / 补缺）
+- 股票名称（若 iFinD `股票简称` 查询失败则自动回退到静态映射 / 其它数据源）
 - 筹码分布
 - 搜索增强
 - LLM 主分析
 - 报告生成
 - 通知发送
+
+## 当前覆盖边界
+
+已经优先切到同花顺的结构化链路：
+
+- 历史日线：`cmd_history_quotation`
+- 实时行情：`real_time_quotation`
+- 实时市场字段补齐：同日 iFinD 市场指标包
+- 股票名称：`股票简称` 轻量查询
+- 基本面 / 估值 / 一致预期：`smart_stock_picking`
+
+当前仍保留混合源或外部源的链路：
+
+- 新闻 / 舆情 / 事件搜索：继续走 Bocha / Tavily / SerpAPI
+- 筹码分布：继续走 HSCloud / Wencai / Akshare / Tushare / Efinance
+- 其它非结构化情报：继续保持开放搜索，不强制替换为同花顺
 
 ## 如何配置
 
@@ -175,14 +195,18 @@ PY
 
 - iFinD 配置解析测试
 - iFinD token 缓存与 service 测试
+- iFinD 官方行情 client 请求与 fetcher 映射测试
 - pipeline 注入 / 跳过测试
 - analyzer prompt 增强测试
 - 本地单股全流程 smoke run
+- 本地真实日线 / 实时接口探测与补缺 smoke
 
 关键测试文件：
 
 - [tests/test_config_llm_and_stock_overrides.py](/Users/boyuewu/Projects/JusticePlutus/tests/test_config_llm_and_stock_overrides.py)
 - [tests/test_ifind_auth.py](/Users/boyuewu/Projects/JusticePlutus/tests/test_ifind_auth.py)
+- [tests/test_ifind_client.py](/Users/boyuewu/Projects/JusticePlutus/tests/test_ifind_client.py)
+- [tests/test_ifind_fetcher.py](/Users/boyuewu/Projects/JusticePlutus/tests/test_ifind_fetcher.py)
 - [tests/test_ifind_service.py](/Users/boyuewu/Projects/JusticePlutus/tests/test_ifind_service.py)
 - [tests/test_ifind_pipeline_integration.py](/Users/boyuewu/Projects/JusticePlutus/tests/test_ifind_pipeline_integration.py)
 - [tests/test_ifind_analyzer_prompt.py](/Users/boyuewu/Projects/JusticePlutus/tests/test_ifind_analyzer_prompt.py)

@@ -36,14 +36,16 @@ flowchart TD
 
 | 数据类型 | 主要字段 | 来源链路 |
 |---------|----------|----------|
-| 日线 | open/close/high/low/volume/amount/ma | `TongHuaShun(iFinD，可用时) -> Tushare -> Efinance -> Akshare -> Pytdx -> Baostock -> YFinance` |
-| 实时 | price/volume_ratio/turnover_rate/估值字段 | `TongHuaShun(iFinD，可用时) -> REALTIME_SOURCE_PRIORITY` 顺序尝试，首源成功后补缺字段 |
+| 日线 | open/close/high/low/volume/amount/ma | `TongHuaShun(iFinD cmd_history_quotation) -> Tushare -> Efinance -> Akshare -> Pytdx -> Baostock -> YFinance` |
+| 实时 | price/volume_ratio/turnover_rate/估值字段 | `TongHuaShun(iFinD real_time_quotation) -> 同日 iFinD market-metrics backfill -> REALTIME_SOURCE_PRIORITY` 顺序补缺字段 |
+| 名称 | stock_name | `实时行情名称 -> TongHuaShun(iFinD 股票简称轻量查询) -> 静态映射 -> 其它支持 get_stock_name 的数据源` |
 | 筹码 | profit_ratio/avg_cost/concentration | `HSCloud -> Wencai -> Akshare -> Tushare -> Efinance` |
 
 特性：
 
 - 实时与筹码链路都有熔断器，避免故障源持续拖慢流程
 - 单源失败不直接终止，按链路自动切换
+- 股票名称在 THS 专业模式下优先走同花顺，但保留静态映射与外部源兜底
 
 ### 2.4 搜索层
 
