@@ -1,5 +1,21 @@
 # JusticePlutus
 
+<div align="center">
+
+**让 A 股自选股从行情、新闻和模型推理一路压成真正能发出去的决策结果。**
+
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
+![A-Share](https://img.shields.io/badge/Market-A--Share-C62828?style=flat-square)
+![LLM](https://img.shields.io/badge/LLM-Structured_Analysis-6D28D9?style=flat-square)
+![CLI](https://img.shields.io/badge/Interface-CLI-1D4ED8?style=flat-square)
+![Automation](https://img.shields.io/badge/Delivery-Automation-0F766E?style=flat-square)
+
+行情抓取 · 搜索增强 · 结构化分析 · 多通道推送
+
+[功能架构](docs/FUNCTION_ARCHITECTURE.md) · [快速开始](docs/QUICKSTART_ARCHITECTURE.md) · [赞助支持](#donate)
+
+</div>
+
 ## <a id="donate"></a>赞助支持
 
 如果这个项目对你有帮助，欢迎赞助支持继续迭代。
