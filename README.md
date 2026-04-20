@@ -20,8 +20,8 @@
 
 如果这个项目对你有帮助，欢迎赞助支持继续迭代。
 
-- GitHub 页面右上角可直接点击 `Sponsor`
-- 如果你更习惯国内付款方式，可以直接扫码赞助
+- 爱发电：`https://ifdian.net/a/etherstrings`
+- 国内付款方式：直接使用下方 `JusticePlutus` 项目内收款码
 
 <div>
   <img src="docs/assets/donate/alipay.jpg" alt="Alipay QR" width="260" />

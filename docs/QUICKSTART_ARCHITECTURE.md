@@ -13,7 +13,7 @@
 - 使用 `Bocha + Tavily + SerpAPI` 做搜索增强
 - 结果可推送到 `Telegram Bot`（其它通道可扩展）
 
-如果这个项目对你有帮助，可以在 GitHub 页面点击 `Sponsor`，或前往 [README 捐赠入口](../README.md#donate) 扫码支持项目继续迭代。
+如果这个项目对你有帮助，可以前往爱发电 `https://ifdian.net/a/etherstrings`，或前往 [README 捐赠入口](../README.md#donate) 直接使用项目内收款码支持继续迭代。
 
 配套文档：
 
