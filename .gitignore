@@ -18,3 +18,7 @@ docs/*.private.md
 
 .DS_Store
 Thumbs.db
+
+# local-only
+.claude/settings.local.json
+.tmp/
